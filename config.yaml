@@ -1,0 +1,6 @@
+config:
+  hostname: localhost
+  listen_port: 8080
+  # Optional TLS configuration - uncomment to enable HTTPS
+  # tls_cert: /path/to/cert.cer
+  # tls_key: /path/to/cert.key

@@ -1,0 +1,9 @@
+rule:
+  path: files/bar
+  request_uri: /abc/123/def
+  header: X-User
+  header_value:
+    - foo
+    - bar
+  user_agent: Mozilla/5.0 foobarbaz
+  eol: 2026-11-27T00:30:00.000Z
