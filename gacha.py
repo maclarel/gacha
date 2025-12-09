@@ -14,6 +14,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
+# Constants
+CHUNK_SIZE = 8192  # File streaming chunk size in bytes
+
 
 class RuleValidator:
     """Validates requests against defined rules."""
@@ -98,6 +101,8 @@ class RuleValidator:
 class GachaHandler(BaseHTTPRequestHandler):
     """HTTP request handler for Gacha server."""
     
+    # Class variables are shared across instances but only read, not modified
+    # This is safe because BaseHTTPRequestHandler creates new instances per request
     rules: List[RuleValidator] = []
     base_path: str = ""
     
@@ -119,13 +124,16 @@ class GachaHandler(BaseHTTPRequestHandler):
         
         # Construct file path and validate against directory traversal
         try:
-            file_path = os.path.join(self.base_path, matching_rule.path)
-            # Resolve to absolute path and ensure it's within base_path
-            file_path = os.path.abspath(file_path)
-            base_path_abs = os.path.abspath(self.base_path)
-            if not file_path.startswith(base_path_abs):
+            # Use pathlib for robust cross-platform path validation
+            base_path_resolved = Path(self.base_path).resolve()
+            file_path_resolved = (base_path_resolved / matching_rule.path).resolve()
+            
+            # Ensure the file path is within the base path
+            if not file_path_resolved.is_relative_to(base_path_resolved):
                 self.send_error(404, "Not Found")
                 return
+            
+            file_path = str(file_path_resolved)
         except (ValueError, OSError):
             self.send_error(404, "Not Found")
             return
@@ -146,9 +154,8 @@ class GachaHandler(BaseHTTPRequestHandler):
             
             # Stream file in chunks
             with open(file_path, 'rb') as f:
-                chunk_size = 8192
                 while True:
-                    chunk = f.read(chunk_size)
+                    chunk = f.read(CHUNK_SIZE)
                     if not chunk:
                         break
                     self.wfile.write(chunk)
@@ -280,6 +287,8 @@ def main():
         else:
             try:
                 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                # Set minimum TLS version for security
+                context.minimum_version = ssl.TLSVersion.TLSv1_2
                 context.load_cert_chain(tls_cert, tls_key)
                 httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
                 tls_enabled = True
