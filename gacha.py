@@ -10,7 +10,7 @@ import yaml
 import argparse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import ssl
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
@@ -67,7 +67,6 @@ class RuleValidator:
                     eol_date = self.eol
                 
                 # Compare with timezone-aware current time
-                from datetime import timezone
                 now = datetime.now(timezone.utc)
                 if now >= eol_date:
                     return False
@@ -118,26 +117,45 @@ class GachaHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Not Found")
             return
         
-        # Construct file path
-        file_path = os.path.join(self.base_path, matching_rule.path)
+        # Construct file path and validate against directory traversal
+        try:
+            file_path = os.path.join(self.base_path, matching_rule.path)
+            # Resolve to absolute path and ensure it's within base_path
+            file_path = os.path.abspath(file_path)
+            base_path_abs = os.path.abspath(self.base_path)
+            if not file_path.startswith(base_path_abs):
+                self.send_error(404, "Not Found")
+                return
+        except (ValueError, OSError):
+            self.send_error(404, "Not Found")
+            return
         
         # Check if file exists
         if not os.path.isfile(file_path):
             self.send_error(404, "File Not Found")
             return
         
-        # Serve the file
+        # Serve the file with streaming for memory efficiency
         try:
-            with open(file_path, 'rb') as f:
-                content = f.read()
+            file_size = os.path.getsize(file_path)
             
             self.send_response(200)
             self.send_header('Content-Type', 'application/octet-stream')
-            self.send_header('Content-Length', len(content))
+            self.send_header('Content-Length', file_size)
             self.end_headers()
-            self.wfile.write(content)
+            
+            # Stream file in chunks
+            with open(file_path, 'rb') as f:
+                chunk_size = 8192
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
         except Exception as e:
-            self.send_error(500, f"Internal Server Error: {str(e)}")
+            # Log the error internally but don't expose details to client
+            print(f"Error serving file: {e}")
+            self.send_error(500, "Internal Server Error")
     
     def log_message(self, format, *args):
         """Custom log message format."""
@@ -252,6 +270,7 @@ def main():
     # Configure TLS if certificates are provided
     tls_cert = config.get('tls_cert')
     tls_key = config.get('tls_key')
+    tls_enabled = False
     
     if tls_cert and tls_key:
         if not os.path.isfile(tls_cert):
@@ -263,12 +282,13 @@ def main():
                 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
                 context.load_cert_chain(tls_cert, tls_key)
                 httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+                tls_enabled = True
                 print(f"TLS enabled with cert: {tls_cert}")
             except Exception as e:
                 print(f"Error setting up TLS: {e}")
                 sys.exit(1)
     
-    protocol = "https" if (tls_cert and tls_key) else "http"
+    protocol = "https" if tls_enabled else "http"
     print(f"Starting Gacha server on {protocol}://{hostname}:{port}")
     print(f"Loaded {len(rules)} rule(s)")
     
