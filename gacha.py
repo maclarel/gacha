@@ -73,8 +73,9 @@ class RuleValidator:
                 now = datetime.now(timezone.utc)
                 if now >= eol_date:
                     return False
-            except (ValueError, AttributeError, TypeError) as e:
-                print(f"Warning: Invalid EOL date format in rule: {self.eol}, error: {e}")
+            except (ValueError, AttributeError, TypeError):
+                # Log generic warning without exposing sensitive details
+                print("Warning: Invalid EOL date format in rule")
                 return False
         
         # Check user agent if specified
@@ -286,8 +287,9 @@ def main():
             print(f"Warning: TLS key not found: {tls_key}")
         else:
             try:
-                context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-                # Set minimum TLS version for security
+                # Use create_default_context for better security defaults
+                context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+                # Ensure minimum TLS 1.2
                 context.minimum_version = ssl.TLSVersion.TLSv1_2
                 context.load_cert_chain(tls_cert, tls_key)
                 httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
