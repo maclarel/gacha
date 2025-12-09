@@ -1,0 +1,3 @@
+rule:
+  path: files/test.txt
+  request_uri: /test
