@@ -149,13 +149,6 @@ class GachaHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Not Found")
             return
 
-        # Check again if this is a serve_once rule that has been served
-        # (this shouldn't happen due to the check above, but adding for safety)
-        if matching_rule.serve_once and matching_rule.rule_id in self.served_once_rules:
-            logging.info(f"Request denied: Rule {matching_rule.rule_id} has already been served once")
-            self.send_error(404, "Not Found")
-            return
-
         # Construct file path and validate against directory traversal
         try:
             # Use pathlib for robust cross-platform path validation
@@ -177,11 +170,6 @@ class GachaHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Not Found")
             return
 
-        # Mark rule as served if serve_once is enabled
-        if matching_rule.serve_once:
-            self.served_once_rules.add(matching_rule.rule_id)
-            logging.info(f"Serving file for rule {matching_rule.rule_id} with serve_once=True - this rule will not be available for future requests")
-
         # Serve the file with streaming for memory efficiency
         try:
             file_size = os.path.getsize(file_path)
@@ -198,6 +186,11 @@ class GachaHandler(BaseHTTPRequestHandler):
                     if not chunk:
                         break
                     self.wfile.write(chunk)
+            
+            # Mark rule as served only after successful file serving
+            if matching_rule.serve_once:
+                self.served_once_rules.add(matching_rule.rule_id)
+                logging.info(f"Successfully served file for rule {matching_rule.rule_id} with serve_once=True - this rule will not be available for future requests")
         except Exception as e:
             # Log the error internally but don't expose details to client
             logging.info(f"Error serving file: {e}")
