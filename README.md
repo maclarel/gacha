@@ -95,6 +95,7 @@ Each file in the `files/` directory can have a corresponding rule file in `rules
 - `header_value`: Single value or list of acceptable header values (OR logic)
 - `user_agent`: Exact user agent string required
 - `eol`: Expiration date/time in ISO 8601 format (file won't be served after this date)
+- `serve_once`: Boolean value (default: False). When set to True, the file will only be served once during the server's lifetime. Subsequent requests will receive a 404 error. This setting does not persist across server restarts.
 
 #### Example: Complex Rule
 
@@ -183,6 +184,19 @@ rule:
   request_uri: /data
   user_agent: MyApp/2.0 (Linux; Android 10)
 ```
+
+### Example 4: Single-Use File
+
+Serve a file only once (useful for one-time downloads, burn-after-reading scenarios):
+
+```yaml
+rule:
+  path: files/secret-data.bin
+  request_uri: /onetime
+  serve_once: True
+```
+
+After the first successful request, all subsequent requests to `/onetime` will receive a 404 error, even if all other conditions match. The file becomes available again after restarting the server.
 
 ## License
 

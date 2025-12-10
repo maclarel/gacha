@@ -30,14 +30,16 @@ CHUNK_SIZE = 8192  # File streaming chunk size in bytes
 class RuleValidator:
     """Validates requests against defined rules."""
 
-    def __init__(self, rule: Dict[str, Any]):
+    def __init__(self, rule: Dict[str, Any], rule_id: str):
         self.rule = rule
+        self.rule_id = rule_id
         self.path = rule.get('path')
         self.request_uri = rule.get('request_uri')
         self.header = rule.get('header')
         self.header_value = rule.get('header_value', [])
         self.user_agent = rule.get('user_agent')
         self.eol = rule.get('eol')
+        self.serve_once = rule.get('serve_once', False)
 
         # Ensure header_value is a list
         if self.header_value and not isinstance(self.header_value, list):
@@ -124,6 +126,7 @@ class GachaHandler(BaseHTTPRequestHandler):
     # This is safe because BaseHTTPRequestHandler creates new instances per request
     rules: List[RuleValidator] = []
     base_path: str = ""
+    served_once_rules: set = set()  # Track rules that have been served with serve_once=True
 
     def do_GET(self):
         """Handle GET requests."""
@@ -133,6 +136,11 @@ class GachaHandler(BaseHTTPRequestHandler):
         # Find matching rule
         matching_rule = None
         for rule in self.rules:
+            # Check if rule has serve_once and has already been served
+            if rule.serve_once and rule.rule_id in self.served_once_rules:
+                logging.info(f"Request denied: Rule {rule.rule_id} has already been served once and cannot be served again (serve_once=True)")
+                continue
+            
             if rule.validate(self.path, headers):
                 matching_rule = rule
                 break
@@ -178,6 +186,11 @@ class GachaHandler(BaseHTTPRequestHandler):
                     if not chunk:
                         break
                     self.wfile.write(chunk)
+            
+            # Mark rule as served only after successful file serving
+            if matching_rule.serve_once:
+                self.served_once_rules.add(matching_rule.rule_id)
+                logging.info(f"Successfully served file for rule {matching_rule.rule_id} with serve_once=True - this rule will not be available for future requests")
         except Exception as e:
             # Log the error internally but don't expose details to client
             logging.info(f"Error serving file: {e}")
@@ -252,7 +265,8 @@ def load_rules(rules_dir: str) -> List[RuleValidator]:
                     logging.critical(f"Warning: Missing 'request_uri' in rule file: {filename}")
                     continue
 
-                rules.append(RuleValidator(rule_data))
+                # Use filename as rule_id for tracking serve_once
+                rules.append(RuleValidator(rule_data, filename))
                 logging.info(f"Loaded rule from {filename}")
             except Exception as e:
                 logging.error(f"Warning: Error loading rule file {filename}: {e}")

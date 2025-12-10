@@ -1,0 +1,4 @@
+rule:
+  path: files/test.txt
+  request_uri: /serve_once_test
+  serve_once: True
