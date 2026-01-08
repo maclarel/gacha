@@ -1,0 +1,4 @@
+rule:
+  path: files/restricted.txt
+  request_uri: /restricted
+  source_ip: 192.168.1.0/24

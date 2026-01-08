@@ -1,0 +1,6 @@
+rule:
+  path: files/test.txt
+  request_uri: /ipv6test
+  source_ip:
+    - ::1/128
+    - 2001:db8::/32

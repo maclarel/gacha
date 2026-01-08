@@ -14,6 +14,7 @@ import ssl
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+import ipaddress
 
 # Logging
 logging.basicConfig(level=logging.DEBUG,
@@ -40,12 +41,17 @@ class RuleValidator:
         self.user_agent = rule.get('user_agent')
         self.eol = rule.get('eol')
         self.serve_once = rule.get('serve_once', False)
+        self.source_ip = rule.get('source_ip', [])
 
         # Ensure header_value is a list
         if self.header_value and not isinstance(self.header_value, list):
             self.header_value = [self.header_value]
+        
+        # Ensure source_ip is a list
+        if self.source_ip and not isinstance(self.source_ip, list):
+            self.source_ip = [self.source_ip]
 
-    def validate(self, request_path: str, headers: Dict[str, str]) -> bool:
+    def validate(self, request_path: str, headers: Dict[str, str], client_address: tuple = None) -> bool:
         """
         Validate a request against this rule.
         All conditions must be met (logical AND).
@@ -53,6 +59,7 @@ class RuleValidator:
         Args:
             request_path: The URI path being requested
             headers: Dictionary of request headers
+            client_address: Tuple of (ip, port) from the client connection
 
         Returns:
             True if request matches all rule conditions, False otherwise
@@ -60,6 +67,46 @@ class RuleValidator:
         # Check request URI (required)
         if self.request_uri != request_path:
             return False
+
+        # Check source IP if specified
+        if self.source_ip:
+            # Extract client IP from X-Forwarded-For header or client_address
+            client_ip = None
+            
+            # Prefer X-Forwarded-For if present (proxy scenario)
+            x_forwarded_for = headers.get('X-Forwarded-For', '').strip()
+            if x_forwarded_for:
+                # X-Forwarded-For can contain multiple IPs, use the first one (original client)
+                client_ip = x_forwarded_for.split(',')[0].strip()
+            elif client_address:
+                # Use direct connection IP
+                client_ip = client_address[0]
+            
+            if not client_ip:
+                logging.debug("No client IP available for source_ip check")
+                return False
+            
+            # Validate IP against allowed CIDRs (OR logic for multiple CIDRs)
+            ip_matched = False
+            try:
+                client_ip_obj = ipaddress.ip_address(client_ip)
+                for cidr in self.source_ip:
+                    try:
+                        network = ipaddress.ip_network(cidr, strict=False)
+                        if client_ip_obj in network:
+                            ip_matched = True
+                            logging.debug(f"Client IP {client_ip} matched CIDR {cidr}")
+                            break
+                    except (ValueError, TypeError) as e:
+                        logging.critical(f"Warning: Invalid CIDR notation in rule: {cidr}")
+                        continue
+                
+                if not ip_matched:
+                    logging.debug(f"Client IP {client_ip} did not match any allowed CIDRs {self.source_ip}")
+                    return False
+            except ValueError:
+                logging.debug(f"Invalid client IP address: {client_ip}")
+                return False
 
         # Check EOL date if specified
         if self.eol:
@@ -141,7 +188,7 @@ class GachaHandler(BaseHTTPRequestHandler):
                 logging.info(f"Request denied: Rule {rule.rule_id} has already been served once and cannot be served again (serve_once=True)")
                 continue
             
-            if rule.validate(self.path, headers):
+            if rule.validate(self.path, headers, self.client_address):
                 matching_rule = rule
                 break
 

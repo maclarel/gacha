@@ -96,6 +96,7 @@ Each file in the `files/` directory can have a corresponding rule file in `rules
 - `user_agent`: Exact user agent string required
 - `eol`: Expiration date/time in ISO 8601 format (file won't be served after this date)
 - `serve_once`: Boolean value (default: False). When set to True, the file will only be served once during the server's lifetime. Subsequent requests will receive a 404 error. This setting does not persist across server restarts.
+- `source_ip`: Single CIDR notation or list of CIDR notations specifying allowed source IP addresses (OR logic). Supports both IPv4 and IPv6. If the `X-Forwarded-For` header is present, its value (the original client IP) is used; otherwise, the direct client connection IP is used.
 
 #### Example: Complex Rule
 
@@ -109,6 +110,9 @@ rule:
     - key-2
   user_agent: MyApp/1.0
   eol: 2026-11-27T00:30:00.000Z
+  source_ip:
+    - 192.168.1.0/24
+    - 10.0.0.50/32
 ```
 
 This rule requires:
@@ -117,6 +121,7 @@ This rule requires:
 - AND `X-API-Key` value must be either `key-1` OR `key-2`
 - AND User agent must be exactly `MyApp/1.0`
 - AND Current date must be before `2026-11-27T00:30:00Z`
+- AND Source IP must be from `192.168.1.0/24` OR exactly `10.0.0.50`
 
 #### Example: Simple Rule
 
@@ -197,6 +202,35 @@ rule:
 ```
 
 After the first successful request, all subsequent requests to `/onetime` will receive a 404 error, even if all other conditions match. The file becomes available again after restarting the server.
+
+### Example 5: IP Address Restriction
+
+Serve a file only from specific IP addresses or networks:
+
+```yaml
+rule:
+  path: files/internal-data.txt
+  request_uri: /internal
+  source_ip: 192.168.1.0/24
+```
+
+This restricts access to clients from the 192.168.1.0/24 network.
+
+### Example 6: Multiple IP Networks
+
+Allow access from multiple networks (OR logic):
+
+```yaml
+rule:
+  path: files/multi-site-data.json
+  request_uri: /data
+  source_ip:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+```
+
+This allows access from any of the three private network ranges. If a request comes through a proxy, the `X-Forwarded-For` header value is used to determine the client's IP address.
 
 ## License
 
