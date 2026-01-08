@@ -98,7 +98,7 @@ class RuleValidator:
                             logging.debug(f"Client IP {client_ip} matched CIDR {cidr}")
                             break
                     except (ValueError, TypeError) as e:
-                        logging.critical(f"Warning: Invalid CIDR notation in rule: {cidr}")
+                        logging.warning(f"Invalid CIDR notation in rule: {cidr} - {e}")
                         continue
                 
                 if not ip_matched:
