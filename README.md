@@ -101,10 +101,17 @@ For TLS/HTTPS, uncomment the certs volume mount in `docker-compose.yml` and ensu
      gacha
    ```
 
-   For HTTPS support, also add:
+   For HTTPS support, add the certificate port and volume:
    ```bash
-   -p 443:8443 \
-   -v $(pwd)/certs:/app/certs
+   docker run -d \
+     --name gacha-server \
+     -p 80:8080 \
+     -p 443:8443 \
+     -v $(pwd)/files:/app/files \
+     -v $(pwd)/rules:/app/rules \
+     -v $(pwd)/config.yaml:/app/config.yaml \
+     -v $(pwd)/certs:/app/certs \
+     gacha
    ```
 
 3. View logs:
