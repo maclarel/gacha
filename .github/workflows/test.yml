@@ -1,0 +1,111 @@
+name: Test
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Run unit tests
+      run: |
+        python -m unittest test_gacha.py -v
+
+  docker-build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Build Docker image
+      run: |
+        docker build -t gacha:test .
+        
+    - name: Verify Docker image
+      run: |
+        docker images | grep gacha
+
+  integration:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Start server in background
+      run: |
+        python gacha.py &
+        SERVER_PID=$!
+        echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+        # Wait for server to start and verify it's running
+        sleep 3
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+          echo "✗ Server failed to start"
+          exit 1
+        fi
+        echo "✓ Server started successfully with PID $SERVER_PID"
+        
+    - name: Test server is running
+      run: |
+        # Test that server responds to a valid request
+        response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/test)
+        echo "Response code: $response"
+        if [ "$response" -eq "200" ]; then
+          echo "✓ Server successfully serving files"
+        else
+          echo "✗ Server returned unexpected code: $response"
+          exit 1
+        fi
+        
+    - name: Test invalid request returns 404
+      run: |
+        # Test that server returns 404 for invalid request
+        response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/nonexistent)
+        echo "Response code: $response"
+        if [ "$response" -eq "404" ]; then
+          echo "✓ Server correctly returns 404 for invalid requests"
+        else
+          echo "✗ Server returned unexpected code: $response"
+          exit 1
+        fi
+        
+    - name: Stop server
+      if: always()
+      run: |
+        if [ ! -z "$SERVER_PID" ]; then
+          kill $SERVER_PID 2>/dev/null || true
+        fi
