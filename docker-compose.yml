@@ -5,10 +5,10 @@ services:
     build: .
     container_name: gacha-server
     ports:
-      # Map container port 8080 to host port 80 (HTTP) optional
-      #- "8080:80"
+      # Map container port 8080 to host port 80 (HTTP)
+      - "80:8080"
       # Map container port 8443 to host port 443 (HTTPS)
-      - "8443:443"
+      - "443:8443"
     volumes:
       # Mount your local files directory to the container
       # Replace ./files with your desired path if needed
@@ -22,7 +22,6 @@ services:
       # Uncomment and replace ./certs with your desired path if using HTTPS
       # - ./certs:/app/certs
       
-      # Mount custom config.yaml (optional)
-      # Uncomment to use a custom configuration file
-      # - ./config.yaml:/app/config.yaml
+      # Mount config.yaml 
+      - ./config.yaml:/app/config.yaml
     restart: unless-stopped
