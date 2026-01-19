@@ -1,6 +1,7 @@
 config:
-  hostname: localhost
+  hostname: localhost # set to 0.0.0.0 if running in Docker
   listen_port: 8080
   # Optional TLS configuration - uncomment to enable HTTPS
+  # Be sure to update listen_port to something more appropriate
   # tls_cert: /path/to/cert.cer
   # tls_key: /path/to/cert.key
