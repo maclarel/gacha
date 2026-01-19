@@ -68,8 +68,13 @@ jobs:
         python gacha.py &
         SERVER_PID=$!
         echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
-        # Wait for server to start
+        # Wait for server to start and verify it's running
         sleep 3
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+          echo "✗ Server failed to start"
+          exit 1
+        fi
+        echo "✓ Server started successfully with PID $SERVER_PID"
         
     - name: Test server is running
       run: |
