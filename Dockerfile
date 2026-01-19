@@ -18,7 +18,7 @@ COPY config.yaml .
 RUN mkdir -p /app/files /app/rules /app/certs
 
 # Expose ports for HTTP and HTTPS
-EXPOSE 80 443
+EXPOSE 8080 8443
 
 # Run the application
 CMD ["python3", "gacha.py"]
