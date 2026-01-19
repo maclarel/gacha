@@ -27,6 +27,87 @@ Shoutouts to @rookuu for the inspiration <3
    pip install -r requirements.txt
    ```
 
+## Running with Docker
+
+Gacha can be easily run using Docker, which eliminates the need to install Python and dependencies locally.
+
+### Prerequisites
+
+- Docker installed on your system ([Get Docker](https://docs.docker.com/get-docker/))
+- Docker Compose installed (included with Docker Desktop, or install separately for Linux)
+
+### Using Docker Compose (Recommended)
+
+1. Clone this repository
+2. Modify rules, add files, and update configuration as desired
+3. Start the server using Docker Compose:
+   ```bash
+   docker-compose up -d
+   ```
+
+5. Access your files at `http://localhost` (maps to port 80) or `https://localhost` (maps to port 443 if TLS is configured)
+
+6. View logs:
+   ```bash
+   docker-compose logs -f
+   ```
+
+7. Stop the server:
+   ```bash
+   docker-compose down
+   ```
+
+**Note**: The `docker-compose.yml` file maps:
+- Container port 8080 → Host port 80 (HTTP)
+- Container port 8443 → Host port 443 (HTTPS)
+- Local `./files` → Container `/app/files`
+- Local `./rules` → Container `/app/rules`
+- Local `./config.yaml` → Container `/app/config.yaml`
+
+For TLS/HTTPS, uncomment the certs volume mount in `docker-compose.yml` and ensure your certificate paths in `config.yaml` point to `/app/certs/`.
+
+### Using Docker (Without Docker Compose)
+
+1. Build the Docker image:
+   ```bash
+   docker build -t gacha .
+   ```
+
+2. Run the container:
+   ```bash
+   docker run -d \
+     --name gacha-server \
+     -p 80:8080 \
+     -v $(pwd)/files:/app/files \
+     -v $(pwd)/rules:/app/rules \
+     -v $(pwd)/config.yaml:/app/config.yaml \
+     gacha
+   ```
+
+   For HTTPS support, add the certificate port and volume:
+   ```bash
+   docker run -d \
+     --name gacha-server \
+     -p 80:8080 \
+     -p 443:8443 \
+     -v $(pwd)/files:/app/files \
+     -v $(pwd)/rules:/app/rules \
+     -v $(pwd)/config.yaml:/app/config.yaml \
+     -v $(pwd)/certs:/app/certs \
+     gacha
+   ```
+
+3. View logs:
+   ```bash
+   docker logs -f gacha-server
+   ```
+
+4. Stop and remove the container:
+   ```bash
+   docker stop gacha-server
+   docker rm gacha-server
+   ```
+
 ## Quick Start
 
 1. Create a `config.yaml` file with your server configuration:
