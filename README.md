@@ -39,37 +39,20 @@ Gacha can be easily run using Docker, which eliminates the need to install Pytho
 ### Using Docker Compose (Recommended)
 
 1. Clone this repository
-
-2. Create a `config.yaml` file with your server configuration:
-   ```yaml
-   config:
-     hostname: 0.0.0.0  # Use 0.0.0.0 when running in Docker
-     listen_port: 8080
-     # Optional TLS configuration
-     # tls_cert: /app/certs/cert.cer
-     # tls_key: /app/certs/cert.key
-   ```
-
-3. Create `files/` and `rules/` directories:
-   ```bash
-   mkdir -p files rules
-   ```
-
-4. Place files to serve in the `files/` directory and create corresponding rule files in `rules/`
-
-5. Start the server using Docker Compose:
+2. Modify rules, add files, and update configuration as desired
+3. Start the server using Docker Compose:
    ```bash
    docker-compose up -d
    ```
 
-6. Access your files at `http://localhost` (maps to port 80) or `https://localhost` (maps to port 443 if TLS is configured)
+5. Access your files at `http://localhost` (maps to port 80) or `https://localhost` (maps to port 443 if TLS is configured)
 
-7. View logs:
+6. View logs:
    ```bash
    docker-compose logs -f
    ```
 
-8. Stop the server:
+7. Stop the server:
    ```bash
    docker-compose down
    ```
