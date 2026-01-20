@@ -31,6 +31,10 @@ Shoutouts to @rookuu for the inspiration <3
 
 Gacha can be easily run using Docker, which eliminates the need to install Python and dependencies locally.
 
+> [!IMPORTANT]
+> Ensure that `hostname` in `config.yaml` is set to `0.0.0.0` when running in Docker otherwise the default `localhost` will make the service inaccessible from outside of the container.
+> If using Host-mode networking you can instead use the hostname or desired FQDN that would be relevant for the host machine.
+
 ### Prerequisites
 
 - Docker installed on your system ([Get Docker](https://docs.docker.com/get-docker/))
