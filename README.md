@@ -11,6 +11,7 @@ Shoutouts to @rookuu for the inspiration <3
 ## Features
 
 - **Configuration-driven**: Centralized server configuration and per-file access rules
+- **Automatic rule reloading**: Monitors rule files for changes and reloads automatically without server restart
 - **Fine-grained access control**: Control file access based on:
   - Request URI (required)
   - HTTP headers and their values (optional, with OR logic for multiple values)
@@ -163,7 +164,22 @@ config:
   listen_port: 8080           # Required: port to listen on
   tls_cert: /path/to/cert.cer # Optional: TLS certificate path
   tls_key: /path/to/cert.key  # Optional: TLS key path
+  watch_rules: true           # Optional: Enable rule file monitoring (default: true)
+  watch_interval: 3.0         # Optional: Rule file check interval in seconds (default: 3.0)
 ```
+
+#### Rule File Monitoring
+
+By default, Gacha monitors the rules directory for changes and automatically reloads rules when files are added, modified, or deleted. This allows you to update access control rules without restarting the server.
+
+- **`watch_rules`**: Set to `false` to disable automatic rule reloading (default: `true`)
+- **`watch_interval`**: How often to check for changes in seconds (default: `3.0`)
+
+During rule reloading:
+- Rules remain enforced throughout the reload process (no downtime)
+- If new rules fail to load, the old rules are kept
+- The `serve_once` tracking is reset when rules are reloaded
+
 
 ### Rule Files (`rules/*.yaml`)
 
