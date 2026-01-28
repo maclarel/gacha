@@ -6,8 +6,6 @@ Opsec-friendly file server over HTTP(S) with fine-grained access control.
 
 Gacha is a minimal, configuration-driven webserver that serves files over HTTP or HTTPS based on flexible, per-file access control rules. Files are only served when all specified conditions are met, including request URI, headers, user agent, and expiration dates.
 
-Shoutouts to @rookuu for the inspiration <3
-
 ## Features
 
 - **Configuration-driven**: Centralized server configuration and per-file access rules
@@ -336,3 +334,7 @@ This allows access from any of the three private network ranges. If a request co
 ## License
 
 See LICENSE file for details.
+
+## gr33ts
+
+Shoutouts to @rookuu & @oliikit for the inspiration <3
