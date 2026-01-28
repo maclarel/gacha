@@ -34,11 +34,6 @@ CHUNK_SIZE = 8192  # File streaming chunk size in bytes
 DEFAULT_POLL_INTERVAL = 3.0  # Default polling interval in seconds
 
 
-# Constants
-CHUNK_SIZE = 8192  # File streaming chunk size in bytes
-DEFAULT_POLL_INTERVAL = 3.0  # Default polling interval in seconds
-
-
 class RuleFileMonitor:
     """Monitors rule files for changes and reloads them automatically."""
     
@@ -103,32 +98,35 @@ class RuleFileMonitor:
     def reload_rules(self):
         """Reload rules from the rules directory."""
         logging.info("Reloading rules due to file changes...")
-        new_rules = load_rules(self.rules_dir)
-        
-        # Update rules atomically with lock
-        with self.rules_lock:
-            self.rules = new_rules
-            self.file_mtimes = self.get_rule_files()
-        
-        # Call the reload callback if set
-        if self.reload_callback:
-            self.reload_callback(new_rules)
-        
-        logging.info(f"Reloaded {len(new_rules)} rule(s)")
+        try:
+            new_rules = load_rules(self.rules_dir)
+            
+            # Update rules atomically with lock
+            with self.rules_lock:
+                self.rules = new_rules
+                # Update file_mtimes only on successful load
+                self.file_mtimes = self.get_rule_files()
+            
+            # Call the reload callback if set (pass a copy to prevent modifications)
+            if self.reload_callback:
+                self.reload_callback(new_rules.copy())
+            
+            logging.info(f"Reloaded {len(new_rules)} rule(s)")
+        except Exception as e:
+            logging.error(f"Failed to reload rules: {e}. Keeping existing rules.")
+            # Don't update file_mtimes so we don't retry immediately
+            # The next poll will check again
     
     def monitor_loop(self):
         """Main monitoring loop that runs in a separate thread."""
         logging.info(f"Started rule file monitoring (polling every {self.poll_interval}s)")
-        
-        # Initialize file times
-        self.file_mtimes = self.get_rule_files()
         
         while not self.stop_event.is_set():
             try:
                 if self.has_changes():
                     self.reload_rules()
             except Exception as e:
-                logging.error(f"Error during rule reload: {e}")
+                logging.error(f"Error during rule monitoring: {e}")
             
             # Sleep in smaller intervals to allow quick shutdown
             for _ in range(int(self.poll_interval * 10)):
@@ -318,6 +316,7 @@ class GachaHandler(BaseHTTPRequestHandler):
     base_path: str = ""
     served_once_rules: set = set()  # Track rules that have been served with serve_once=True
     rule_monitor: Optional[RuleFileMonitor] = None  # Monitor for rule file changes
+    rules_lock = threading.Lock()  # Lock for thread-safe access to rules and served_once_rules
 
     def do_GET(self):
         """Handle GET requests."""
@@ -325,22 +324,24 @@ class GachaHandler(BaseHTTPRequestHandler):
         headers = {k: v for k, v in self.headers.items()}
 
         # Get current rules from monitor if available, otherwise use class variable
-        if self.rule_monitor:
-            current_rules = self.rule_monitor.get_rules()
-        else:
-            current_rules = self.rules
-
-        # Find matching rule
-        matching_rule = None
-        for rule in current_rules:
-            # Check if rule has serve_once and has already been served
-            if rule.serve_once and rule.rule_id in self.served_once_rules:
-                logging.info(f"Request denied: Rule {rule.rule_id} has already been served once and cannot be served again (serve_once=True)")
-                continue
+        # Use lock to ensure thread-safe access
+        with self.rules_lock:
+            if self.rule_monitor:
+                current_rules = self.rule_monitor.get_rules()
+            else:
+                current_rules = self.rules.copy()
             
-            if rule.validate(self.path, headers, self.client_address):
-                matching_rule = rule
-                break
+            # Find matching rule
+            matching_rule = None
+            for rule in current_rules:
+                # Check if rule has serve_once and has already been served
+                if rule.serve_once and rule.rule_id in self.served_once_rules:
+                    logging.info(f"Request denied: Rule {rule.rule_id} has already been served once and cannot be served again (serve_once=True)")
+                    continue
+                
+                if rule.validate(self.path, headers, self.client_address):
+                    matching_rule = rule
+                    break
 
         if not matching_rule:
             self.send_error(404, "Not Found")
@@ -386,7 +387,8 @@ class GachaHandler(BaseHTTPRequestHandler):
             
             # Mark rule as served only after successful file serving
             if matching_rule.serve_once:
-                self.served_once_rules.add(matching_rule.rule_id)
+                with self.rules_lock:
+                    self.served_once_rules.add(matching_rule.rule_id)
                 logging.info(f"Successfully served file for rule {matching_rule.rule_id} with serve_once=True - this rule will not be available for future requests")
         except Exception as e:
             # Log the error internally but don't expose details to client
@@ -510,9 +512,10 @@ def main():
         
         # Define callback to update handler's rules
         def update_handler_rules(new_rules):
-            GachaHandler.rules = new_rules
-            # Clear served_once tracking on reload to give fresh start
-            GachaHandler.served_once_rules.clear()
+            with GachaHandler.rules_lock:
+                GachaHandler.rules = new_rules
+                # Clear served_once tracking on reload to give fresh start
+                GachaHandler.served_once_rules.clear()
             logging.info("Handler rules updated")
         
         rule_monitor.start(rules, update_handler_rules)

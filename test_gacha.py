@@ -329,9 +329,17 @@ class TestRuleFileMonitor(unittest.TestCase):
         self.test_dir = tempfile.mkdtemp()
         self.rules_dir = os.path.join(self.test_dir, 'rules')
         os.makedirs(self.rules_dir)
+        self.monitors = []  # Track monitors to clean up
     
     def tearDown(self):
-        """Clean up temporary directory."""
+        """Clean up temporary directory and stop any running monitors."""
+        # Stop all monitors
+        for monitor in self.monitors:
+            try:
+                monitor.stop()
+            except Exception:
+                pass
+        
         import shutil
         shutil.rmtree(self.test_dir, ignore_errors=True)
     
@@ -474,6 +482,7 @@ class TestRuleFileMonitor(unittest.TestCase):
         initial_rules = load_rules(self.rules_dir)
         
         monitor = RuleFileMonitor(self.rules_dir, poll_interval=0.5)
+        self.monitors.append(monitor)
         monitor.start(initial_rules)
         
         # Thread should be running
@@ -502,7 +511,8 @@ class TestRuleFileMonitor(unittest.TestCase):
         
         initial_rules = load_rules(self.rules_dir)
         
-        monitor = RuleFileMonitor(self.rules_dir, poll_interval=0.5)
+        monitor = RuleFileMonitor(self.rules_dir, poll_interval=0.3)
+        self.monitors.append(monitor)
         monitor.start(initial_rules, test_callback)
         
         # Add a new rule file
@@ -512,14 +522,14 @@ class TestRuleFileMonitor(unittest.TestCase):
             'request_uri': '/new'
         })
         
-        # Wait for callback
-        callback_called.wait(timeout=2.0)
+        # Wait for callback with longer timeout for CI environments
+        callback_called.wait(timeout=3.0)
         
         # Stop monitor
         monitor.stop()
         
         # Callback should have been called with new rules
-        self.assertTrue(callback_called.is_set())
+        self.assertTrue(callback_called.is_set(), "Callback was not called within timeout")
         self.assertEqual(len(callback_rules), 2)
 
 
