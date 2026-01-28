@@ -75,6 +75,30 @@ class RuleFileMonitor:
                     continue
         return rule_files
     
+    def get_changed_rule_files(self) -> set:
+        """
+        Get the set of rule filenames that have been added, modified, or deleted.
+        
+        Returns:
+            Set of filenames (basenames only) that changed
+        """
+        current_files = self.get_rule_files()
+        changed_files = set()
+        
+        # Check for new or modified files
+        for filepath, mtime in current_files.items():
+            filename = os.path.basename(filepath)
+            if filepath not in self.file_mtimes or self.file_mtimes[filepath] != mtime:
+                changed_files.add(filename)
+        
+        # Check for deleted files
+        for filepath in self.file_mtimes:
+            if filepath not in current_files:
+                filename = os.path.basename(filepath)
+                changed_files.add(filename)
+        
+        return changed_files
+    
     def has_changes(self) -> bool:
         """
         Check if any rule files have been added, removed, or modified.
@@ -99,6 +123,9 @@ class RuleFileMonitor:
         """Reload rules from the rules directory."""
         logging.info("Reloading rules due to file changes...")
         try:
+            # Identify which rule files actually changed
+            changed_files = self.get_changed_rule_files()
+            
             new_rules = load_rules(self.rules_dir)
             
             # Update rules atomically with lock
@@ -108,10 +135,11 @@ class RuleFileMonitor:
                 self.file_mtimes = self.get_rule_files()
             
             # Call the reload callback if set (pass a copy to prevent modifications)
+            # Also pass the set of changed rule filenames
             if self.reload_callback:
-                self.reload_callback(new_rules.copy())
+                self.reload_callback(new_rules.copy(), changed_files)
             
-            logging.info(f"Reloaded {len(new_rules)} rule(s)")
+            logging.info(f"Reloaded {len(new_rules)} rule(s). Changed files: {', '.join(changed_files) if changed_files else 'none'}")
         except Exception as e:
             logging.error(f"Failed to reload rules: {e}. Keeping existing rules.")
             # Don't update file_mtimes so we don't retry immediately
@@ -511,11 +539,19 @@ def main():
         rule_monitor = RuleFileMonitor(rules_dir, poll_interval)
         
         # Define callback to update handler's rules
-        def update_handler_rules(new_rules):
+        def update_handler_rules(new_rules, changed_files):
             with GachaHandler.rules_lock:
                 GachaHandler.rules = new_rules
-                # Clear served_once tracking on reload to give fresh start
-                GachaHandler.served_once_rules.clear()
+                # Only clear serve_once tracking for rules that changed
+                # changed_files contains the filenames (basenames) of changed rule files
+                if changed_files:
+                    # Remove serve_once tracking for rules from changed files
+                    rules_to_clear = {rule_id for rule_id in GachaHandler.served_once_rules 
+                                     if rule_id in changed_files}
+                    for rule_id in rules_to_clear:
+                        GachaHandler.served_once_rules.discard(rule_id)
+                    if rules_to_clear:
+                        logging.info(f"Cleared serve_once tracking for changed rules: {', '.join(rules_to_clear)}")
             logging.info("Handler rules updated")
         
         rule_monitor.start(rules, update_handler_rules)

@@ -504,9 +504,11 @@ class TestRuleFileMonitor(unittest.TestCase):
         
         callback_called = threading.Event()
         callback_rules = []
+        callback_changed_files = []
         
-        def test_callback(new_rules):
+        def test_callback(new_rules, changed_files):
             callback_rules.extend(new_rules)
+            callback_changed_files.extend(changed_files)
             callback_called.set()
         
         initial_rules = load_rules(self.rules_dir)
@@ -531,6 +533,51 @@ class TestRuleFileMonitor(unittest.TestCase):
         # Callback should have been called with new rules
         self.assertTrue(callback_called.is_set(), "Callback was not called within timeout")
         self.assertEqual(len(callback_rules), 2)
+        # Should report new.yaml as changed
+        self.assertIn('new.yaml', callback_changed_files)
+    
+    def test_selective_serve_once_reset(self):
+        """Test that serve_once tracking is only reset for changed rules."""
+        # Create two rule files
+        self.create_rule_file('rule1.yaml', {
+            'path': 'files/file1.txt',
+            'request_uri': '/file1'
+        })
+        self.create_rule_file('rule2.yaml', {
+            'path': 'files/file2.txt',
+            'request_uri': '/file2'
+        })
+        
+        changed_files_list = []
+        
+        def track_changes(new_rules, changed_files):
+            changed_files_list.clear()
+            changed_files_list.extend(changed_files)
+        
+        initial_rules = load_rules(self.rules_dir)
+        
+        monitor = RuleFileMonitor(self.rules_dir, poll_interval=0.3)
+        self.monitors.append(monitor)
+        monitor.start(initial_rules, track_changes)
+        
+        time.sleep(0.2)  # Let monitor start
+        
+        # Modify only rule1.yaml
+        time.sleep(0.1)  # Ensure mtime changes
+        self.create_rule_file('rule1.yaml', {
+            'path': 'files/file1_modified.txt',
+            'request_uri': '/file1-modified'
+        })
+        
+        # Wait for reload
+        time.sleep(1.0)
+        
+        # Stop monitor
+        monitor.stop()
+        
+        # Only rule1.yaml should be in changed files
+        self.assertIn('rule1.yaml', changed_files_list)
+        self.assertNotIn('rule2.yaml', changed_files_list)
 
 
 if __name__ == '__main__':
