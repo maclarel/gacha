@@ -13,8 +13,13 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import ssl
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, TYPE_CHECKING
 import ipaddress
+import threading
+import time
+
+if TYPE_CHECKING:
+    from typing import Callable
 
 # Logging
 logging.basicConfig(level=logging.DEBUG,
@@ -26,6 +31,144 @@ logging.basicConfig(level=logging.DEBUG,
 
 # Constants
 CHUNK_SIZE = 8192  # File streaming chunk size in bytes
+DEFAULT_POLL_INTERVAL = 3.0  # Default polling interval in seconds
+
+
+# Constants
+CHUNK_SIZE = 8192  # File streaming chunk size in bytes
+DEFAULT_POLL_INTERVAL = 3.0  # Default polling interval in seconds
+
+
+class RuleFileMonitor:
+    """Monitors rule files for changes and reloads them automatically."""
+    
+    def __init__(self, rules_dir: str, poll_interval: float = DEFAULT_POLL_INTERVAL):
+        """
+        Initialize the rule file monitor.
+        
+        Args:
+            rules_dir: Directory containing rule files
+            poll_interval: How often to check for changes (in seconds)
+        """
+        self.rules_dir = rules_dir
+        self.poll_interval = poll_interval
+        self.file_mtimes: Dict[str, float] = {}
+        self.rules: List[Any] = []  # List of RuleValidator objects
+        self.rules_lock = threading.Lock()
+        self.monitor_thread: Optional[threading.Thread] = None
+        self.stop_event = threading.Event()
+        self.reload_callback = None
+        
+    def get_rule_files(self) -> Dict[str, float]:
+        """
+        Get all rule files and their modification times.
+        
+        Returns:
+            Dictionary mapping file paths to modification times
+        """
+        rule_files = {}
+        if not os.path.isdir(self.rules_dir):
+            return rule_files
+            
+        for filename in os.listdir(self.rules_dir):
+            if filename.endswith(('.yaml', '.yml')):
+                filepath = os.path.join(self.rules_dir, filename)
+                try:
+                    mtime = os.path.getmtime(filepath)
+                    rule_files[filepath] = mtime
+                except OSError:
+                    continue
+        return rule_files
+    
+    def has_changes(self) -> bool:
+        """
+        Check if any rule files have been added, removed, or modified.
+        
+        Returns:
+            True if changes detected, False otherwise
+        """
+        current_files = self.get_rule_files()
+        
+        # Check if files were added or removed
+        if set(current_files.keys()) != set(self.file_mtimes.keys()):
+            return True
+        
+        # Check if any files were modified
+        for filepath, mtime in current_files.items():
+            if filepath not in self.file_mtimes or self.file_mtimes[filepath] != mtime:
+                return True
+        
+        return False
+    
+    def reload_rules(self):
+        """Reload rules from the rules directory."""
+        logging.info("Reloading rules due to file changes...")
+        new_rules = load_rules(self.rules_dir)
+        
+        # Update rules atomically with lock
+        with self.rules_lock:
+            self.rules = new_rules
+            self.file_mtimes = self.get_rule_files()
+        
+        # Call the reload callback if set
+        if self.reload_callback:
+            self.reload_callback(new_rules)
+        
+        logging.info(f"Reloaded {len(new_rules)} rule(s)")
+    
+    def monitor_loop(self):
+        """Main monitoring loop that runs in a separate thread."""
+        logging.info(f"Started rule file monitoring (polling every {self.poll_interval}s)")
+        
+        # Initialize file times
+        self.file_mtimes = self.get_rule_files()
+        
+        while not self.stop_event.is_set():
+            try:
+                if self.has_changes():
+                    self.reload_rules()
+            except Exception as e:
+                logging.error(f"Error during rule reload: {e}")
+            
+            # Sleep in smaller intervals to allow quick shutdown
+            for _ in range(int(self.poll_interval * 10)):
+                if self.stop_event.is_set():
+                    break
+                time.sleep(0.1)
+    
+    def start(self, initial_rules: List[Any], reload_callback=None):
+        """
+        Start monitoring rule files in a background thread.
+        
+        Args:
+            initial_rules: Initial list of rules
+            reload_callback: Function to call when rules are reloaded
+        """
+        with self.rules_lock:
+            self.rules = initial_rules
+            self.file_mtimes = self.get_rule_files()
+        
+        self.reload_callback = reload_callback
+        self.stop_event.clear()
+        self.monitor_thread = threading.Thread(target=self.monitor_loop, daemon=True)
+        self.monitor_thread.start()
+    
+    def stop(self):
+        """Stop the monitoring thread."""
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            logging.info("Stopping rule file monitor...")
+            self.stop_event.set()
+            self.monitor_thread.join(timeout=2.0)
+    
+    def get_rules(self) -> List[Any]:
+        """
+        Get the current rules in a thread-safe manner.
+        
+        Returns:
+            Current list of rules
+        """
+        with self.rules_lock:
+            return self.rules.copy()
 
 
 class RuleValidator:
@@ -174,15 +317,22 @@ class GachaHandler(BaseHTTPRequestHandler):
     rules: List[RuleValidator] = []
     base_path: str = ""
     served_once_rules: set = set()  # Track rules that have been served with serve_once=True
+    rule_monitor: Optional[RuleFileMonitor] = None  # Monitor for rule file changes
 
     def do_GET(self):
         """Handle GET requests."""
         # Get request headers
         headers = {k: v for k, v in self.headers.items()}
 
+        # Get current rules from monitor if available, otherwise use class variable
+        if self.rule_monitor:
+            current_rules = self.rule_monitor.get_rules()
+        else:
+            current_rules = self.rules
+
         # Find matching rule
         matching_rule = None
-        for rule in self.rules:
+        for rule in current_rules:
             # Check if rule has serve_once and has already been served
             if rule.serve_once and rule.rule_id in self.served_once_rules:
                 logging.info(f"Request denied: Rule {rule.rule_id} has already been served once and cannot be served again (serve_once=True)")
@@ -272,6 +422,12 @@ def load_config(config_path: str) -> Dict[str, Any]:
         if 'listen_port' not in config:
             raise ValueError("Missing required 'listen_port' in config")
 
+        # Set defaults for optional monitoring configuration
+        if 'watch_rules' not in config:
+            config['watch_rules'] = True  # Enable by default
+        if 'watch_interval' not in config:
+            config['watch_interval'] = DEFAULT_POLL_INTERVAL
+
         return config
     except FileNotFoundError:
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
@@ -346,6 +502,25 @@ def main():
     GachaHandler.rules = rules
     GachaHandler.base_path = args.base_path
 
+    # Set up rule file monitoring if enabled
+    rule_monitor = None
+    if config.get('watch_rules', True):
+        poll_interval = config.get('watch_interval', DEFAULT_POLL_INTERVAL)
+        rule_monitor = RuleFileMonitor(rules_dir, poll_interval)
+        
+        # Define callback to update handler's rules
+        def update_handler_rules(new_rules):
+            GachaHandler.rules = new_rules
+            # Clear served_once tracking on reload to give fresh start
+            GachaHandler.served_once_rules.clear()
+            logging.info("Handler rules updated")
+        
+        rule_monitor.start(rules, update_handler_rules)
+        GachaHandler.rule_monitor = rule_monitor
+        logging.info(f"Rule file monitoring enabled (interval: {poll_interval}s)")
+    else:
+        logging.info("Rule file monitoring disabled")
+
     # Create server
     hostname = config['hostname']
     port = config['listen_port']
@@ -385,6 +560,8 @@ def main():
         httpd.serve_forever()
     except KeyboardInterrupt:
         logging.info("Shutting down server...")
+        if rule_monitor:
+            rule_monitor.stop()
         httpd.shutdown()
         sys.exit(0)
 

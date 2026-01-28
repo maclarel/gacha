@@ -11,10 +11,12 @@ import unittest
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import yaml
+import time
+import threading
 
 # Add parent directory to path to import gacha
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gacha import load_config, load_rules, RuleValidator
+from gacha import load_config, load_rules, RuleValidator, RuleFileMonitor
 
 
 class TestConfigLoading(unittest.TestCase):
@@ -317,6 +319,208 @@ class TestIntegration(unittest.TestCase):
             for rule in rules:
                 self.assertIsNotNone(rule.path)
                 self.assertIsNotNone(rule.request_uri)
+
+
+class TestRuleFileMonitor(unittest.TestCase):
+    """Test rule file monitoring and reloading."""
+    
+    def setUp(self):
+        """Create temporary directory for test files."""
+        self.test_dir = tempfile.mkdtemp()
+        self.rules_dir = os.path.join(self.test_dir, 'rules')
+        os.makedirs(self.rules_dir)
+    
+    def tearDown(self):
+        """Clean up temporary directory."""
+        import shutil
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+    
+    def create_rule_file(self, filename: str, rule_data: dict):
+        """Helper to create a rule file."""
+        rule_path = os.path.join(self.rules_dir, filename)
+        with open(rule_path, 'w') as f:
+            yaml.dump({'rule': rule_data}, f)
+        return rule_path
+    
+    def test_monitor_initialization(self):
+        """Test that monitor initializes correctly."""
+        monitor = RuleFileMonitor(self.rules_dir, poll_interval=1.0)
+        self.assertEqual(monitor.rules_dir, self.rules_dir)
+        self.assertEqual(monitor.poll_interval, 1.0)
+        self.assertEqual(len(monitor.rules), 0)
+    
+    def test_get_rule_files(self):
+        """Test getting rule files and their modification times."""
+        # Create a rule file
+        self.create_rule_file('test1.yaml', {
+            'path': 'files/test.txt',
+            'request_uri': '/test'
+        })
+        
+        monitor = RuleFileMonitor(self.rules_dir)
+        rule_files = monitor.get_rule_files()
+        
+        self.assertEqual(len(rule_files), 1)
+        self.assertIn(os.path.join(self.rules_dir, 'test1.yaml'), rule_files)
+    
+    def test_has_changes_detects_new_file(self):
+        """Test that has_changes detects new rule files."""
+        monitor = RuleFileMonitor(self.rules_dir)
+        monitor.file_mtimes = monitor.get_rule_files()
+        
+        # Initially no changes
+        self.assertFalse(monitor.has_changes())
+        
+        # Add a new file
+        self.create_rule_file('new.yaml', {
+            'path': 'files/new.txt',
+            'request_uri': '/new'
+        })
+        
+        # Should detect change
+        self.assertTrue(monitor.has_changes())
+    
+    def test_has_changes_detects_modified_file(self):
+        """Test that has_changes detects modified rule files."""
+        # Create initial file
+        rule_path = self.create_rule_file('test.yaml', {
+            'path': 'files/test.txt',
+            'request_uri': '/test'
+        })
+        
+        monitor = RuleFileMonitor(self.rules_dir)
+        monitor.file_mtimes = monitor.get_rule_files()
+        
+        # Sleep briefly to ensure mtime changes
+        time.sleep(0.1)
+        
+        # Modify the file
+        with open(rule_path, 'w') as f:
+            yaml.dump({'rule': {
+                'path': 'files/modified.txt',
+                'request_uri': '/modified'
+            }}, f)
+        
+        # Should detect change
+        self.assertTrue(monitor.has_changes())
+    
+    def test_has_changes_detects_deleted_file(self):
+        """Test that has_changes detects deleted rule files."""
+        # Create initial file
+        rule_path = self.create_rule_file('test.yaml', {
+            'path': 'files/test.txt',
+            'request_uri': '/test'
+        })
+        
+        monitor = RuleFileMonitor(self.rules_dir)
+        monitor.file_mtimes = monitor.get_rule_files()
+        
+        # Delete the file
+        os.remove(rule_path)
+        
+        # Should detect change
+        self.assertTrue(monitor.has_changes())
+    
+    def test_reload_rules(self):
+        """Test that reload_rules updates the rules list."""
+        # Create initial rules
+        self.create_rule_file('rule1.yaml', {
+            'path': 'files/file1.txt',
+            'request_uri': '/file1'
+        })
+        
+        monitor = RuleFileMonitor(self.rules_dir)
+        monitor.reload_rules()
+        
+        # Should have loaded 1 rule
+        self.assertEqual(len(monitor.rules), 1)
+        self.assertEqual(monitor.rules[0].request_uri, '/file1')
+        
+        # Add another rule
+        self.create_rule_file('rule2.yaml', {
+            'path': 'files/file2.txt',
+            'request_uri': '/file2'
+        })
+        
+        monitor.reload_rules()
+        
+        # Should have loaded 2 rules
+        self.assertEqual(len(monitor.rules), 2)
+    
+    def test_get_rules_thread_safe(self):
+        """Test that get_rules returns a thread-safe copy."""
+        self.create_rule_file('test.yaml', {
+            'path': 'files/test.txt',
+            'request_uri': '/test'
+        })
+        
+        monitor = RuleFileMonitor(self.rules_dir)
+        monitor.reload_rules()
+        
+        rules1 = monitor.get_rules()
+        rules2 = monitor.get_rules()
+        
+        # Should return copies, not the same list
+        self.assertIsNot(rules1, rules2)
+        self.assertEqual(len(rules1), len(rules2))
+    
+    def test_monitor_thread_lifecycle(self):
+        """Test starting and stopping the monitor thread."""
+        self.create_rule_file('test.yaml', {
+            'path': 'files/test.txt',
+            'request_uri': '/test'
+        })
+        
+        initial_rules = load_rules(self.rules_dir)
+        
+        monitor = RuleFileMonitor(self.rules_dir, poll_interval=0.5)
+        monitor.start(initial_rules)
+        
+        # Thread should be running
+        self.assertIsNotNone(monitor.monitor_thread)
+        self.assertTrue(monitor.monitor_thread.is_alive())
+        
+        # Stop the monitor
+        monitor.stop()
+        
+        # Thread should be stopped (either stop_event is set or thread is not alive)
+        self.assertTrue(monitor.stop_event.is_set() or not monitor.monitor_thread.is_alive())
+    
+    def test_reload_callback_called(self):
+        """Test that reload callback is called when rules are reloaded."""
+        self.create_rule_file('test.yaml', {
+            'path': 'files/test.txt',
+            'request_uri': '/test'
+        })
+        
+        callback_called = threading.Event()
+        callback_rules = []
+        
+        def test_callback(new_rules):
+            callback_rules.extend(new_rules)
+            callback_called.set()
+        
+        initial_rules = load_rules(self.rules_dir)
+        
+        monitor = RuleFileMonitor(self.rules_dir, poll_interval=0.5)
+        monitor.start(initial_rules, test_callback)
+        
+        # Add a new rule file
+        time.sleep(0.2)  # Give monitor time to start
+        self.create_rule_file('new.yaml', {
+            'path': 'files/new.txt',
+            'request_uri': '/new'
+        })
+        
+        # Wait for callback
+        callback_called.wait(timeout=2.0)
+        
+        # Stop monitor
+        monitor.stop()
+        
+        # Callback should have been called with new rules
+        self.assertTrue(callback_called.is_set())
+        self.assertEqual(len(callback_rules), 2)
 
 
 if __name__ == '__main__':
