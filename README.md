@@ -186,7 +186,7 @@ Each file in the `files/` directory can have a corresponding rule file in `rules
 #### Required Fields
 
 - `path`: Path to the file relative to the server's base path
-- `request_uri`: The URI path that must be requested
+- `request_uri`: The URI path that must be requested. Can be a single URI string or a list of URI paths (OR logic). Multiple request_uri values across different rules are not allowed and will cause the server to fail to start.
 
 #### Optional Fields
 
@@ -232,6 +232,19 @@ rule:
 
 This rule only requires the request URI to be `/public`.
 
+#### Example: Multiple Request URIs
+
+```yaml
+rule:
+  path: files/api-docs.pdf
+  request_uri:
+    - /docs
+    - /api/docs
+    - /documentation
+```
+
+This rule serves the same file for any of the three URI paths. The request URI must be `/docs` OR `/api/docs` OR `/documentation`.
+
 ## Usage
 
 ```bash
@@ -246,10 +259,13 @@ Options:
 
 - All conditions in a rule are evaluated with AND logic (all must be true)
 - Multiple `header_value` entries are evaluated with OR logic (any can match)
+- Multiple `request_uri` entries are evaluated with OR logic (any can match)
+- Multiple `source_ip` entries are evaluated with OR logic (any can match)
 - Files without corresponding rules in `rules/` directory will NOT be served
 - Request URIs must match exactly (no pattern matching or wildcards)
 - User agent strings must match exactly (no partial matching)
 - The server returns 404 for all unauthorized requests (does not reveal why access was denied)
+- Duplicate `request_uri` values across different rule files are not allowed and will cause the server to fail to start with a FATAL error
 
 ## Examples
 

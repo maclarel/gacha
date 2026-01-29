@@ -212,6 +212,10 @@ class RuleValidator:
         self.serve_once = rule.get('serve_once', False)
         self.source_ip = rule.get('source_ip', [])
 
+        # Ensure request_uri is a list
+        if self.request_uri and not isinstance(self.request_uri, list):
+            self.request_uri = [self.request_uri]
+        
         # Ensure header_value is a list
         if self.header_value and not isinstance(self.header_value, list):
             self.header_value = [self.header_value]
@@ -233,8 +237,8 @@ class RuleValidator:
         Returns:
             True if request matches all rule conditions, False otherwise
         """
-        # Check request URI (required)
-        if self.request_uri != request_path:
+        # Check request URI (required) - OR logic for multiple URIs
+        if request_path not in self.request_uri:
             return False
 
         # Check source IP if specified
@@ -476,6 +480,8 @@ def load_rules(rules_dir: str) -> List[RuleValidator]:
         List of RuleValidator objects
     """
     rules = []
+    # Track all request URIs to detect duplicates
+    uri_to_rule_file: Dict[str, str] = {}
 
     if not os.path.isdir(rules_dir):
         logger.critical(f"Warning: Rules directory not found: {rules_dir}")
@@ -497,6 +503,19 @@ def load_rules(rules_dir: str) -> List[RuleValidator]:
                 if 'request_uri' not in rule_data:
                     logging.critical(f"Warning: Missing 'request_uri' in rule file: {filename}")
                     continue
+
+                # Get request_uri as a list
+                request_uris = rule_data.get('request_uri')
+                if not isinstance(request_uris, list):
+                    request_uris = [request_uris]
+                
+                # Check for duplicate request_uri across rules
+                for uri in request_uris:
+                    if uri in uri_to_rule_file:
+                        logging.critical(f"FATAL: Duplicate request_uri '{uri}' found in rules: {uri_to_rule_file[uri]} and {filename}")
+                        logging.critical(f"FATAL: Server cannot start with duplicate request_uri values across different rules")
+                        sys.exit(1)
+                    uri_to_rule_file[uri] = filename
 
                 # Use filename as rule_id for tracking serve_once
                 rules.append(RuleValidator(rule_data, filename))
