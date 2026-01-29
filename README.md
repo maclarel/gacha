@@ -200,7 +200,7 @@ When Gacha runs behind a reverse proxy, load balancer, or CDN, the direct client
 1. **When `use_xff` is `false` (default)**: The X-Forwarded-For header is completely ignored. Only direct connection IPs are validated against `source_ip` rules.
 
 2. **When `use_xff` is `true`**:
-   - If the server fails to start with a FATAL error if `xff_upstream_ip` is not configured
+   - The server will fail to start with a FATAL error if `xff_upstream_ip` is not configured
    - Requests from the `xff_upstream_ip` address MUST include an X-Forwarded-For header with a valid IP
    - Requests from the `xff_upstream_ip` address without an X-Forwarded-For header are denied
    - Requests NOT from the `xff_upstream_ip` address will use their direct connection IP (X-Forwarded-For is ignored)
