@@ -5,3 +5,9 @@ config:
   # Be sure to update listen_port to something more appropriate
   # tls_cert: /path/to/cert.cer
   # tls_key: /path/to/cert.key
+  
+  # X-Forwarded-For configuration (for use behind proxies/load balancers)
+  # WARNING: Only enable use_xff if you are running behind a trusted proxy/load balancer
+  # Enabling this without proper xff_upstream_ip configuration is a security risk
+  # use_xff: false  # Set to true to enable X-Forwarded-For header processing
+  # xff_upstream_ip: 10.0.1.2  # IP address or CIDR of the trusted upstream proxy/load balancer

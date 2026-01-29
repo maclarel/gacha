@@ -220,7 +220,7 @@ class RuleValidator:
         if self.source_ip and not isinstance(self.source_ip, list):
             self.source_ip = [self.source_ip]
 
-    def validate(self, request_path: str, headers: Dict[str, str], client_address: tuple = None) -> bool:
+    def validate(self, request_path: str, headers: Dict[str, str], client_address: tuple = None, config: Dict[str, Any] = None) -> bool:
         """
         Validate a request against this rule.
         All conditions must be met (logical AND).
@@ -229,6 +229,7 @@ class RuleValidator:
             request_path: The URI path being requested
             headers: Dictionary of request headers
             client_address: Tuple of (ip, port) from the client connection
+            config: Optional server configuration for X-Forwarded-For handling
 
         Returns:
             True if request matches all rule conditions, False otherwise
@@ -239,17 +240,47 @@ class RuleValidator:
 
         # Check source IP if specified
         if self.source_ip:
-            # Extract client IP from X-Forwarded-For header or client_address
-            client_ip = None
+            # Default config if not provided
+            if config is None:
+                config = {}
             
-            # Prefer X-Forwarded-For if present (proxy scenario)
-            x_forwarded_for = headers.get('X-Forwarded-For', '').strip()
-            if x_forwarded_for:
-                # X-Forwarded-For can contain multiple IPs, use the first one (original client)
-                client_ip = x_forwarded_for.split(',')[0].strip()
-            elif client_address:
-                # Use direct connection IP
-                client_ip = client_address[0]
+            use_xff = config.get('use_xff', False)
+            xff_upstream_ip = config.get('xff_upstream_ip', None)
+            
+            # Extract client IP from connection or X-Forwarded-For header
+            client_ip = None
+            actual_source_ip = client_address[0] if client_address else None
+            
+            # Determine which IP to validate
+            # If use_xff is enabled and the request comes from the trusted upstream IP,
+            # then check if X-Forwarded-For header is present
+            if use_xff and xff_upstream_ip and actual_source_ip:
+                # Check if the actual connection is from the trusted upstream IP
+                try:
+                    actual_source_obj = ipaddress.ip_address(actual_source_ip)
+                    upstream_network = ipaddress.ip_network(xff_upstream_ip, strict=False)
+                    
+                    if actual_source_obj in upstream_network:
+                        # Request is from trusted upstream, check X-Forwarded-For
+                        x_forwarded_for = headers.get('X-Forwarded-For', '').strip()
+                        if x_forwarded_for:
+                            # X-Forwarded-For can contain multiple IPs, use the first one (original client)
+                            client_ip = x_forwarded_for.split(',')[0].strip()
+                            logging.debug(f"Request from trusted upstream {actual_source_ip}, using X-Forwarded-For: {client_ip}")
+                        else:
+                            # From trusted upstream but no X-Forwarded-For header - fail
+                            logging.debug(f"Request from trusted upstream {actual_source_ip} but no X-Forwarded-For header")
+                            return False
+                    else:
+                        # Not from trusted upstream, use actual connection IP
+                        client_ip = actual_source_ip
+                        logging.debug(f"Request from {actual_source_ip} (not trusted upstream), checking direct connection")
+                except (ValueError, TypeError) as e:
+                    logging.warning(f"Error processing upstream IP: {e}")
+                    client_ip = actual_source_ip
+            else:
+                # X-Forwarded-For not configured or not enabled, use direct connection IP
+                client_ip = actual_source_ip
             
             if not client_ip:
                 logging.debug("No client IP available for source_ip check")
@@ -342,6 +373,7 @@ class GachaHandler(BaseHTTPRequestHandler):
     # This is safe because BaseHTTPRequestHandler creates new instances per request
     rules: List[RuleValidator] = []
     base_path: str = ""
+    config: Dict[str, Any] = {}  # Server configuration for X-Forwarded-For handling
     served_once_rules: set = set()  # Track rules that have been served with serve_once=True
     rule_monitor: Optional[RuleFileMonitor] = None  # Monitor for rule file changes
     rules_lock = threading.Lock()  # Lock for thread-safe access to rules and served_once_rules
@@ -367,7 +399,7 @@ class GachaHandler(BaseHTTPRequestHandler):
                     logging.info(f"Request denied: Rule {rule.rule_id} has already been served once and cannot be served again (serve_once=True)")
                     continue
                 
-                if rule.validate(self.path, headers, self.client_address):
+                if rule.validate(self.path, headers, self.client_address, self.config):
                     matching_rule = rule
                     break
 
@@ -457,6 +489,18 @@ def load_config(config_path: str) -> Dict[str, Any]:
             config['watch_rules'] = True  # Enable by default
         if 'watch_interval' not in config:
             config['watch_interval'] = DEFAULT_POLL_INTERVAL
+        
+        # Set defaults for X-Forwarded-For configuration
+        if 'use_xff' not in config:
+            config['use_xff'] = False  # Disabled by default for security
+        
+        # Validate X-Forwarded-For configuration
+        if config.get('use_xff', False):
+            if 'xff_upstream_ip' not in config or not config['xff_upstream_ip']:
+                logging.critical("FATAL: use_xff is enabled but xff_upstream_ip is not set. "
+                               "This is a security risk. Please set xff_upstream_ip to the IP address "
+                               "of your trusted proxy/load balancer or set use_xff to False.")
+                raise ValueError("use_xff is enabled but xff_upstream_ip is not configured")
 
         return config
     except FileNotFoundError:
@@ -531,6 +575,7 @@ def main():
     # Set up handler with rules and base path
     GachaHandler.rules = rules
     GachaHandler.base_path = args.base_path
+    GachaHandler.config = config  # Pass config for X-Forwarded-For handling
 
     # Set up rule file monitoring if enabled
     rule_monitor = None
