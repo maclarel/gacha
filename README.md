@@ -164,6 +164,10 @@ config:
   tls_key: /path/to/cert.key  # Optional: TLS key path
   watch_rules: true           # Optional: Enable rule file monitoring (default: true)
   watch_interval: 3.0         # Optional: Rule file check interval in seconds (default: 3.0)
+  
+  # X-Forwarded-For configuration (for use behind proxies/load balancers)
+  use_xff: false              # Optional: Enable X-Forwarded-For processing (default: false)
+  xff_upstream_ip: 10.0.1.2   # Required if use_xff is true: IP/CIDR of trusted upstream proxy
 ```
 
 #### Rule File Monitoring
@@ -177,6 +181,56 @@ During rule reloading:
 - Rules remain enforced throughout the reload process (no downtime)
 - If new rules fail to load due to syntax errors, the old rules are kept and an error is logged
 - The `serve_once` tracking is intelligently preserved: only rules from changed files have their tracking reset, while unchanged rules maintain their `serve_once` state
+
+#### X-Forwarded-For Configuration
+
+> [!CAUTION]
+> **Security Warning**: The X-Forwarded-For header can be easily spoofed by malicious clients. Only enable `use_xff` if you are running Gacha behind a trusted proxy or load balancer that properly sets this header. Improper configuration can allow attackers to bypass IP-based access controls.
+
+When Gacha runs behind a reverse proxy, load balancer, or CDN, the direct client connection IP will be that of the proxy rather than the original client. The `X-Forwarded-For` header is commonly used by proxies to pass the original client IP.
+
+**Configuration Parameters:**
+
+- **`use_xff`** (boolean, default: `false`): Enables X-Forwarded-For header processing. When disabled, the X-Forwarded-For header is completely ignored for security.
+
+- **`xff_upstream_ip`** (string, required if `use_xff` is true): The IP address or CIDR range of your trusted upstream proxy/load balancer. The X-Forwarded-For header will ONLY be evaluated when requests come from this trusted upstream source.
+
+**How It Works:**
+
+1. **When `use_xff` is `false` (default)**: The X-Forwarded-For header is completely ignored. Only direct connection IPs are validated against `source_ip` rules.
+
+2. **When `use_xff` is `true`**:
+   - If the server fails to start with a FATAL error if `xff_upstream_ip` is not configured
+   - Requests from the `xff_upstream_ip` address MUST include an X-Forwarded-For header with a valid IP
+   - Requests from the `xff_upstream_ip` address without an X-Forwarded-For header are denied
+   - Requests NOT from the `xff_upstream_ip` address will use their direct connection IP (X-Forwarded-For is ignored)
+   - Direct requests from allowed IPs bypass X-Forwarded-For processing entirely
+
+**Example Configuration:**
+
+```yaml
+config:
+  hostname: 0.0.0.0
+  listen_port: 8080
+  use_xff: true
+  xff_upstream_ip: 10.0.1.2  # IP of your load balancer/reverse proxy
+```
+
+In this example:
+- Requests from `10.0.1.2` must include X-Forwarded-For header matching rule's `source_ip`
+- Requests from other IPs (e.g., direct connections bypassing the proxy) are checked against rule's `source_ip` using their direct connection IP
+- This prevents IP spoofing while still allowing direct connections when needed
+
+**CIDR Notation Support:**
+
+The `xff_upstream_ip` parameter supports CIDR notation for upstream proxy ranges:
+
+```yaml
+config:
+  use_xff: true
+  xff_upstream_ip: 10.0.1.0/24  # All IPs in this range are trusted
+```
+
 
 
 ### Rule Files (`rules/*.yaml`)
@@ -195,7 +249,7 @@ Each file in the `files/` directory can have a corresponding rule file in `rules
 - `user_agent`: Exact user agent string required
 - `eol`: Expiration date/time in ISO 8601 format (file won't be served after this date)
 - `serve_once`: Boolean value (default: False). When set to True, the file will only be served once during the server's lifetime. Subsequent requests will receive a 404 error. This setting does not persist across server restarts.
-- `source_ip`: Single CIDR notation or list of CIDR notations specifying allowed source IP addresses (OR logic). Supports both IPv4 and IPv6. If the `X-Forwarded-For` header is present, its value (the original client IP) is used; otherwise, the direct client connection IP is used.
+- `source_ip`: Single CIDR notation or list of CIDR notations specifying allowed source IP addresses (OR logic). Supports both IPv4 and IPv6. See [X-Forwarded-For Configuration](#x-forwarded-for-configuration) for behavior when behind a proxy.
 
 #### Example: Complex Rule
 
@@ -250,6 +304,30 @@ Options:
 - Request URIs must match exactly (no pattern matching or wildcards)
 - User agent strings must match exactly (no partial matching)
 - The server returns 404 for all unauthorized requests (does not reveal why access was denied)
+
+### X-Forwarded-For Security
+
+> [!CAUTION]
+> **Critical Security Warning**: The X-Forwarded-For header can be trivially spoofed by any client. Only enable X-Forwarded-For processing (`use_xff: true`) when ALL of the following are true:
+> 
+> 1. Gacha is running behind a trusted reverse proxy or load balancer
+> 2. The proxy is configured to properly set the X-Forwarded-For header
+> 3. You have configured `xff_upstream_ip` to the exact IP or CIDR range of your proxy
+> 4. Direct access to Gacha (bypassing the proxy) is either blocked by a firewall or expected and accounted for in your rules
+>
+> **Failure to properly configure X-Forwarded-For can allow attackers to bypass IP-based access controls entirely.**
+
+When `use_xff` is disabled (the default and recommended setting):
+- X-Forwarded-For headers are completely ignored
+- Only the actual connection source IP is used for validation
+- This is the most secure configuration for most deployments
+
+When `use_xff` is enabled:
+- Requests from the configured `xff_upstream_ip` MUST include an X-Forwarded-For header
+- Requests from the trusted upstream without X-Forwarded-For are denied
+- Requests from other IPs use their direct connection IP (X-Forwarded-For is ignored)
+- This allows legitimate proxy traffic while preventing IP spoofing from untrusted sources
+
 
 ## Examples
 
@@ -329,7 +407,35 @@ rule:
     - 192.168.0.0/16
 ```
 
-This allows access from any of the three private network ranges. If a request comes through a proxy, the `X-Forwarded-For` header value is used to determine the client's IP address.
+This allows access from any of the three private network ranges. If running behind a proxy with `use_xff` enabled, the X-Forwarded-For header value is used when the request originates from the trusted upstream proxy. See [X-Forwarded-For Configuration](#x-forwarded-for-configuration) for details.
+
+### Example 7: Behind a Load Balancer
+
+When running behind a load balancer or reverse proxy:
+
+```yaml
+# config.yaml
+config:
+  hostname: 0.0.0.0
+  listen_port: 8080
+  use_xff: true
+  xff_upstream_ip: 10.0.1.2  # Load balancer IP
+```
+
+```yaml
+# rules/protected.yaml
+rule:
+  path: files/protected-data.json
+  request_uri: /protected
+  source_ip:
+    - 203.0.113.0/24  # External client IP range
+```
+
+In this scenario:
+- Requests from the load balancer (`10.0.1.2`) with `X-Forwarded-For: 203.0.113.5` will succeed
+- Direct requests from `203.0.113.5` (bypassing the load balancer) will also succeed
+- Requests from the load balancer without X-Forwarded-For will be denied
+- Requests from other IPs will be denied
 
 ## License
 
