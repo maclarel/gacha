@@ -187,10 +187,9 @@ class TestRuleLoading(unittest.TestCase):
         with open(rule_path2, 'w') as f:
             yaml.dump(rule_data2, f)
 
-        # Loading rules should exit with error
-        with self.assertRaises(SystemExit) as cm:
+        # Loading rules should raise ValueError
+        with self.assertRaises(ValueError):
             load_rules(self.rules_dir)
-        self.assertEqual(cm.exception.code, 1)
     
     def test_duplicate_request_uri_in_array(self):
         """Test that duplicate request_uri in array across files causes fatal error."""
@@ -216,10 +215,24 @@ class TestRuleLoading(unittest.TestCase):
         with open(rule_path2, 'w') as f:
             yaml.dump(rule_data2, f)
 
-        # Loading rules should exit with error
-        with self.assertRaises(SystemExit) as cm:
+        # Loading rules should raise ValueError
+        with self.assertRaises(ValueError):
             load_rules(self.rules_dir)
-        self.assertEqual(cm.exception.code, 1)
+    
+    def test_load_rule_with_empty_request_uri(self):
+        """Test that rule with empty request_uri is skipped."""
+        rule_path = os.path.join(self.rules_dir, 'empty.yaml')
+        rule_data = {
+            'rule': {
+                'path': 'files/test.txt',
+                'request_uri': []
+            }
+        }
+        with open(rule_path, 'w') as f:
+            yaml.dump(rule_data, f)
+
+        rules = load_rules(self.rules_dir)
+        self.assertEqual(len(rules), 0)
 
 
 class TestRuleValidation(unittest.TestCase):

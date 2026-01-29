@@ -176,6 +176,7 @@ By default, Gacha monitors the rules directory for changes and automatically rel
 During rule reloading:
 - Rules remain enforced throughout the reload process (no downtime)
 - If new rules fail to load due to syntax errors, the old rules are kept and an error is logged
+- If duplicate `request_uri` values are detected during a reload, the old rules are kept and an error is logged. The duplicate must be fixed before the next successful reload.
 - The `serve_once` tracking is intelligently preserved: only rules from changed files have their tracking reset, while unchanged rules maintain their `serve_once` state
 
 
