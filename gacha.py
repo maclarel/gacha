@@ -140,6 +140,10 @@ class RuleFileMonitor:
                 self.reload_callback(new_rules.copy(), changed_files)
             
             logging.info(f"Reloaded {len(new_rules)} rule(s). Changed files: {', '.join(changed_files) if changed_files else 'none'}")
+        except ValueError as e:
+            # ValueError is raised for duplicate URIs - this is a fatal error even during reload
+            logging.error(f"FATAL: {e}. Keeping existing rules but duplicate URIs must be fixed before next reload.")
+            # Don't update file_mtimes - next poll will check again
         except Exception as e:
             logging.error(f"Failed to reload rules: {e}. Keeping existing rules.")
             # Don't update file_mtimes so we don't retry immediately
@@ -197,6 +201,24 @@ class RuleFileMonitor:
             return self.rules.copy()
 
 
+def normalize_to_list(value, allow_empty=False):
+    """
+    Normalize a value to a list.
+    
+    Args:
+        value: Value to normalize (can be None, single value, or list)
+        allow_empty: Whether to allow empty lists
+    
+    Returns:
+        List containing the value(s), or empty list if value is None/empty and allow_empty is True
+    """
+    if value is None:
+        return [] if allow_empty else None
+    if not isinstance(value, list):
+        return [value]
+    return value
+
+
 class RuleValidator:
     """Validates requests against defined rules."""
 
@@ -212,13 +234,17 @@ class RuleValidator:
         self.serve_once = rule.get('serve_once', False)
         self.source_ip = rule.get('source_ip', [])
 
+        # Ensure request_uri is a list
+        self.request_uri = normalize_to_list(self.request_uri, allow_empty=False)
+        if not self.request_uri:
+            # This should not happen if load_rules validates properly
+            self.request_uri = []
+        
         # Ensure header_value is a list
-        if self.header_value and not isinstance(self.header_value, list):
-            self.header_value = [self.header_value]
+        self.header_value = normalize_to_list(self.header_value, allow_empty=True)
         
         # Ensure source_ip is a list
-        if self.source_ip and not isinstance(self.source_ip, list):
-            self.source_ip = [self.source_ip]
+        self.source_ip = normalize_to_list(self.source_ip, allow_empty=True)
 
     def validate(self, request_path: str, headers: Dict[str, str], client_address: tuple = None, config: Dict[str, Any] = None) -> bool:
         """
@@ -234,8 +260,8 @@ class RuleValidator:
         Returns:
             True if request matches all rule conditions, False otherwise
         """
-        # Check request URI (required)
-        if self.request_uri != request_path:
+        # Check request URI (required) - OR logic for multiple URIs
+        if not self.request_uri or request_path not in self.request_uri:
             return False
 
         # Check source IP if specified
@@ -518,8 +544,13 @@ def load_rules(rules_dir: str) -> List[RuleValidator]:
 
     Returns:
         List of RuleValidator objects
+        
+    Raises:
+        ValueError: If duplicate request_uri values are found across rules
     """
     rules = []
+    # Track all request URIs to detect duplicates
+    uri_to_rule_file: Dict[str, str] = {}
 
     if not os.path.isdir(rules_dir):
         logger.critical(f"Warning: Rules directory not found: {rules_dir}")
@@ -542,9 +573,27 @@ def load_rules(rules_dir: str) -> List[RuleValidator]:
                     logging.critical(f"Warning: Missing 'request_uri' in rule file: {filename}")
                     continue
 
+                # Get request_uri as a list
+                request_uris = normalize_to_list(rule_data.get('request_uri'), allow_empty=False)
+                if not request_uris:
+                    logging.critical(f"Warning: Empty 'request_uri' in rule file: {filename}")
+                    continue
+                
+                # Check for duplicate request_uri across rules
+                for uri in request_uris:
+                    if uri in uri_to_rule_file:
+                        error_msg = f"FATAL: Duplicate request_uri '{uri}' found in rules: {uri_to_rule_file[uri]} and {filename}"
+                        logging.critical(error_msg)
+                        logging.critical("FATAL: Server cannot start with duplicate request_uri values across different rules")
+                        raise ValueError(error_msg)
+                    uri_to_rule_file[uri] = filename
+
                 # Use filename as rule_id for tracking serve_once
                 rules.append(RuleValidator(rule_data, filename))
                 logging.info(f"Loaded rule from {filename}")
+            except ValueError:
+                # Re-raise ValueError for duplicate URIs
+                raise
             except Exception as e:
                 logging.error(f"Warning: Error loading rule file {filename}: {e}")
 
@@ -567,7 +616,12 @@ def main():
 
     # Load rules
     rules_dir = os.path.join(args.base_path, 'rules')
-    rules = load_rules(rules_dir)
+    try:
+        rules = load_rules(rules_dir)
+    except ValueError as e:
+        # ValueError is raised for duplicate URIs - this is a fatal error
+        logging.error(f"Error loading rules: {e}")
+        sys.exit(1)
 
     if not rules:
         logging.warning("Warning: No valid rules loaded. No files will be served.")

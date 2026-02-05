@@ -180,6 +180,7 @@ By default, Gacha monitors the rules directory for changes and automatically rel
 During rule reloading:
 - Rules remain enforced throughout the reload process (no downtime)
 - If new rules fail to load due to syntax errors, the old rules are kept and an error is logged
+- If duplicate `request_uri` values are detected during a reload, the old rules are kept and an error is logged. The duplicate must be fixed before the next successful reload.
 - The `serve_once` tracking is intelligently preserved: only rules from changed files have their tracking reset, while unchanged rules maintain their `serve_once` state
 
 #### X-Forwarded-For Configuration
@@ -240,7 +241,7 @@ Each file in the `files/` directory can have a corresponding rule file in `rules
 #### Required Fields
 
 - `path`: Path to the file relative to the server's base path
-- `request_uri`: The URI path that must be requested
+- `request_uri`: The URI path that must be requested. Can be a single URI string or a list of URI paths (OR logic). Multiple request_uri values across different rules are not allowed and will cause the server to fail to start.
 
 #### Optional Fields
 
@@ -286,6 +287,19 @@ rule:
 
 This rule only requires the request URI to be `/public`.
 
+#### Example: Multiple Request URIs
+
+```yaml
+rule:
+  path: files/api-docs.pdf
+  request_uri:
+    - /docs
+    - /api/docs
+    - /documentation
+```
+
+This rule serves the same file for any of the three URI paths. The request URI must be `/docs` OR `/api/docs` OR `/documentation`.
+
 ## Usage
 
 ```bash
@@ -300,10 +314,13 @@ Options:
 
 - All conditions in a rule are evaluated with AND logic (all must be true)
 - Multiple `header_value` entries are evaluated with OR logic (any can match)
+- Multiple `request_uri` entries are evaluated with OR logic (any can match)
+- Multiple `source_ip` entries are evaluated with OR logic (any can match)
 - Files without corresponding rules in `rules/` directory will NOT be served
 - Request URIs must match exactly (no pattern matching or wildcards)
 - User agent strings must match exactly (no partial matching)
 - The server returns 404 for all unauthorized requests (does not reveal why access was denied)
+- Duplicate `request_uri` values across different rule files are not allowed and will cause the server to fail to start with a FATAL error
 
 ### X-Forwarded-For Security
 
