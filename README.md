@@ -26,6 +26,9 @@ Gacha is a minimal, configuration-driven webserver that serves files over HTTP o
    pip install -r requirements.txt
    ```
 
+> [!NOTE]
+> Example rules and associated files are available in the `/examples` directory. By default, Gacha will not serve any files or evaluate any rules unless you populate them yourself. 
+
 ## Running with Docker
 
 Gacha can be easily run using Docker, which eliminates the need to install Python and dependencies locally.
