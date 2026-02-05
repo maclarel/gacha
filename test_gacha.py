@@ -965,6 +965,239 @@ class TestScenario3XFFEnabled(unittest.TestCase):
         self.assertTrue(rule.validate('/test', headers, client_address, config))
 
 
+class TestXFFEdgeCases(unittest.TestCase):
+    """Test edge cases for X-Forwarded-For header handling."""
+    
+    def test_xff_with_whitespace_only_header_fails(self):
+        """Test that X-Forwarded-For with only whitespace is treated as missing."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['10.0.1.9']
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {
+            'use_xff': True,
+            'xff_upstream_ip': '10.0.1.2'
+        }
+        
+        # X-Forwarded-For with whitespace only should be treated as missing
+        headers = {'X-Forwarded-For': '   '}
+        client_address = ('10.0.1.2', 12345)
+        self.assertFalse(rule.validate('/test', headers, client_address, config))
+    
+    def test_xff_with_empty_string_header_fails(self):
+        """Test that empty X-Forwarded-For header is treated as missing."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['10.0.1.9']
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {
+            'use_xff': True,
+            'xff_upstream_ip': '10.0.1.2'
+        }
+        
+        # Empty X-Forwarded-For should be treated as missing
+        headers = {'X-Forwarded-For': ''}
+        client_address = ('10.0.1.2', 12345)
+        self.assertFalse(rule.validate('/test', headers, client_address, config))
+    
+    def test_xff_with_invalid_ip_format_fails(self):
+        """Test that X-Forwarded-For with invalid IP format is rejected."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['10.0.1.9']
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {
+            'use_xff': True,
+            'xff_upstream_ip': '10.0.1.2'
+        }
+        
+        # Invalid IP in X-Forwarded-For should fail validation
+        headers = {'X-Forwarded-For': 'not-an-ip-address'}
+        client_address = ('10.0.1.2', 12345)
+        self.assertFalse(rule.validate('/test', headers, client_address, config))
+    
+    def test_xff_with_ipv6_address_succeeds(self):
+        """Test that X-Forwarded-For with IPv6 address works correctly."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['2001:db8::1/128']
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {
+            'use_xff': True,
+            'xff_upstream_ip': '10.0.1.2'
+        }
+        
+        # IPv6 address in X-Forwarded-For should work
+        headers = {'X-Forwarded-For': '2001:db8::1'}
+        client_address = ('10.0.1.2', 12345)
+        self.assertTrue(rule.validate('/test', headers, client_address, config))
+    
+    def test_xff_with_extra_whitespace_in_list(self):
+        """Test that X-Forwarded-For with extra whitespace is handled correctly."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['10.0.1.9']
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {
+            'use_xff': True,
+            'xff_upstream_ip': '10.0.1.2'
+        }
+        
+        # Extra whitespace should be stripped correctly
+        headers = {'X-Forwarded-For': '  10.0.1.9  ,  192.168.1.1  '}
+        client_address = ('10.0.1.2', 12345)
+        self.assertTrue(rule.validate('/test', headers, client_address, config))
+    
+    def test_xff_combined_with_other_rule_conditions(self):
+        """Test that X-Forwarded-For works correctly with other rule conditions."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['10.0.1.9'],
+            'header': 'X-API-Key',
+            'header_value': 'secret123',
+            'user_agent': 'MyApp/1.0'
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {
+            'use_xff': True,
+            'xff_upstream_ip': '10.0.1.2'
+        }
+        
+        # All conditions must match including X-Forwarded-For
+        headers = {
+            'X-Forwarded-For': '10.0.1.9',
+            'X-API-Key': 'secret123',
+            'User-Agent': 'MyApp/1.0'
+        }
+        client_address = ('10.0.1.2', 12345)
+        self.assertTrue(rule.validate('/test', headers, client_address, config))
+        
+        # Missing API key should fail even with valid X-Forwarded-For
+        headers_no_key = {
+            'X-Forwarded-For': '10.0.1.9',
+            'User-Agent': 'MyApp/1.0'
+        }
+        self.assertFalse(rule.validate('/test', headers_no_key, client_address, config))
+    
+    def test_xff_upstream_ip_with_ipv6_cidr(self):
+        """Test that xff_upstream_ip supports IPv6 CIDR notation."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['10.0.1.9']
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {
+            'use_xff': True,
+            'xff_upstream_ip': '2001:db8::/32'  # IPv6 CIDR
+        }
+        
+        # Request from IPv6 upstream should use X-Forwarded-For
+        headers = {'X-Forwarded-For': '10.0.1.9'}
+        client_address = ('2001:db8::5', 12345)
+        self.assertTrue(rule.validate('/test', headers, client_address, config))
+    
+    def test_xff_without_source_ip_restriction(self):
+        """Test that X-Forwarded-For is only checked when source_ip is in the rule."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            # No source_ip restriction
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {
+            'use_xff': True,
+            'xff_upstream_ip': '10.0.1.2'
+        }
+        
+        # Should succeed regardless of X-Forwarded-For since no source_ip restriction
+        headers = {'X-Forwarded-For': '10.0.1.9'}
+        client_address = ('10.0.1.2', 12345)
+        self.assertTrue(rule.validate('/test', headers, client_address, config))
+        
+        # Should also succeed without X-Forwarded-For
+        client_address = ('10.0.1.2', 12345)
+        self.assertTrue(rule.validate('/test', {}, client_address, config))
+
+
+class TestXFFDocumentationScenarios(unittest.TestCase):
+    """Test scenarios documented in README for X-Forwarded-For configuration."""
+    
+    def test_example_7_load_balancer_scenario(self):
+        """Test Example 7 from README: Behind a Load Balancer."""
+        # This tests the scenario described in README Example 7
+        rule_data = {
+            'path': 'files/protected-data.json',
+            'request_uri': '/protected',
+            'source_ip': ['203.0.113.0/24']  # External client IP range
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {
+            'use_xff': True,
+            'xff_upstream_ip': '10.0.1.2'  # Load balancer IP
+        }
+        
+        # Request from load balancer with X-Forwarded-For from allowed range should succeed
+        headers = {'X-Forwarded-For': '203.0.113.5'}
+        client_address = ('10.0.1.2', 12345)
+        self.assertTrue(rule.validate('/protected', headers, client_address, config))
+        
+        # Direct request from allowed IP (bypassing load balancer) should succeed
+        client_address = ('203.0.113.5', 12345)
+        self.assertTrue(rule.validate('/protected', {}, client_address, config))
+        
+        # Request from load balancer without X-Forwarded-For should be denied
+        client_address = ('10.0.1.2', 12345)
+        self.assertFalse(rule.validate('/protected', {}, client_address, config))
+        
+        # Request from other IPs should be denied
+        client_address = ('192.168.1.100', 12345)
+        self.assertFalse(rule.validate('/protected', {}, client_address, config))
+    
+    def test_multi_network_access_with_xff(self):
+        """Test multiple IP networks with X-Forwarded-For enabled."""
+        rule_data = {
+            'path': 'files/multi-site-data.json',
+            'request_uri': '/data',
+            'source_ip': [
+                '10.0.0.0/8',
+                '172.16.0.0/12',
+                '192.168.0.0/16'
+            ]
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {
+            'use_xff': True,
+            'xff_upstream_ip': '203.0.113.2'  # Public proxy IP
+        }
+        
+        # Requests from proxy with X-Forwarded-For from each allowed network
+        headers = {'X-Forwarded-For': '10.5.5.5'}
+        client_address = ('203.0.113.2', 12345)
+        self.assertTrue(rule.validate('/data', headers, client_address, config))
+        
+        headers = {'X-Forwarded-For': '172.20.1.1'}
+        self.assertTrue(rule.validate('/data', headers, client_address, config))
+        
+        headers = {'X-Forwarded-For': '192.168.100.50'}
+        self.assertTrue(rule.validate('/data', headers, client_address, config))
+        
+        # Request from proxy with X-Forwarded-For from disallowed network should fail
+        headers = {'X-Forwarded-For': '8.8.8.8'}
+        self.assertFalse(rule.validate('/data', headers, client_address, config))
+
+
 if __name__ == '__main__':
     unittest.main()
 
