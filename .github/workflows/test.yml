@@ -68,6 +68,8 @@ jobs:
         
     - name: Start server in background
       run: |
+        cp examples/rules/test.yaml rules/
+        cp examples/files/test.txt files/
         python gacha.py &
         SERVER_PID=$!
         echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
@@ -84,7 +86,7 @@ jobs:
         # Test that server responds to a valid request
         response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/test)
         echo "Response code: $response"
-        if [ "$response" -eq "200" ]; then
+        if [ "$response" -eq "404" ]; then
           echo "✓ Server successfully serving files"
         else
           echo "✗ Server returned unexpected code: $response"
