@@ -437,7 +437,7 @@ class TestIntegration(unittest.TestCase):
 
     def test_load_project_rules(self):
         """Test loading actual project rules."""
-        rules_dir = 'rules'
+        rules_dir = 'examples/rules'
         if os.path.isdir(rules_dir):
             rules = load_rules(rules_dir)
             # Should have some rules loaded
