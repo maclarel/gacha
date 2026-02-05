@@ -347,8 +347,8 @@ class TestRuleValidation(unittest.TestCase):
         client_address = ('10.0.0.1', 12345)
         self.assertFalse(rule.validate('/test', {}, client_address))
 
-    def test_source_ip_validation_x_forwarded_for(self):
-        """Test source IP validation with X-Forwarded-For header."""
+    def test_source_ip_validation_x_forwarded_for_legacy(self):
+        """Test legacy behavior: X-Forwarded-For is ignored without use_xff config."""
         rule_data = {
             'path': 'files/test.txt',
             'request_uri': '/test',
@@ -356,14 +356,16 @@ class TestRuleValidation(unittest.TestCase):
         }
         rule = RuleValidator(rule_data, 'test_rule')
         
-        # X-Forwarded-For should take precedence
+        # Without use_xff config, X-Forwarded-For should be ignored
+        # Only direct connection IP should be checked
         headers = {'X-Forwarded-For': '10.0.0.50'}
         client_address = ('192.168.1.100', 12345)
-        self.assertTrue(rule.validate('/test', headers, client_address))
+        config = {'use_xff': False}
+        self.assertFalse(rule.validate('/test', headers, client_address, config))
         
-        # Should fail if X-Forwarded-For IP not in range
-        headers = {'X-Forwarded-For': '192.168.1.50'}
-        self.assertFalse(rule.validate('/test', headers, client_address))
+        # Direct connection from valid IP should work
+        client_address = ('10.0.0.50', 12345)
+        self.assertTrue(rule.validate('/test', headers, client_address, config))
 
     def test_serve_once_flag(self):
         """Test serve_once flag is correctly set."""
@@ -705,5 +707,264 @@ class TestRuleFileMonitor(unittest.TestCase):
         self.assertNotIn('rule2.yaml', changed_files_list)
 
 
+class TestXForwardedForConfiguration(unittest.TestCase):
+    """Test X-Forwarded-For configuration validation."""
+    
+    def setUp(self):
+        """Create temporary directory for test files."""
+        self.test_dir = tempfile.mkdtemp()
+    
+    def tearDown(self):
+        """Clean up temporary directory."""
+        import shutil
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+    
+    def test_config_xff_disabled_by_default(self):
+        """Test that use_xff is disabled by default."""
+        config_path = os.path.join(self.test_dir, 'config.yaml')
+        config_data = {
+            'config': {
+                'hostname': 'localhost',
+                'listen_port': 8080
+            }
+        }
+        with open(config_path, 'w') as f:
+            yaml.dump(config_data, f)
+        
+        config = load_config(config_path)
+        self.assertFalse(config.get('use_xff', False))
+    
+    def test_config_xff_enabled_without_upstream_ip_fails(self):
+        """Test that enabling use_xff without xff_upstream_ip raises error."""
+        config_path = os.path.join(self.test_dir, 'config.yaml')
+        config_data = {
+            'config': {
+                'hostname': 'localhost',
+                'listen_port': 8080,
+                'use_xff': True
+            }
+        }
+        with open(config_path, 'w') as f:
+            yaml.dump(config_data, f)
+        
+        with self.assertRaises(ValueError) as context:
+            load_config(config_path)
+        self.assertIn('xff_upstream_ip', str(context.exception))
+    
+    def test_config_xff_enabled_with_empty_upstream_ip_fails(self):
+        """Test that enabling use_xff with empty xff_upstream_ip raises error."""
+        config_path = os.path.join(self.test_dir, 'config.yaml')
+        config_data = {
+            'config': {
+                'hostname': 'localhost',
+                'listen_port': 8080,
+                'use_xff': True,
+                'xff_upstream_ip': ''
+            }
+        }
+        with open(config_path, 'w') as f:
+            yaml.dump(config_data, f)
+        
+        with self.assertRaises(ValueError) as context:
+            load_config(config_path)
+        self.assertIn('xff_upstream_ip', str(context.exception))
+    
+    def test_config_xff_enabled_with_upstream_ip_succeeds(self):
+        """Test that enabling use_xff with xff_upstream_ip succeeds."""
+        config_path = os.path.join(self.test_dir, 'config.yaml')
+        config_data = {
+            'config': {
+                'hostname': 'localhost',
+                'listen_port': 8080,
+                'use_xff': True,
+                'xff_upstream_ip': '10.0.1.2'
+            }
+        }
+        with open(config_path, 'w') as f:
+            yaml.dump(config_data, f)
+        
+        config = load_config(config_path)
+        self.assertTrue(config['use_xff'])
+        self.assertEqual(config['xff_upstream_ip'], '10.0.1.2')
+
+
+class TestScenario1XFFDisabled(unittest.TestCase):
+    """Test Scenario 1: X_FORWARDED_FOR is set to False."""
+    
+    def test_scenario1_direct_requests_from_valid_ips(self):
+        """Test that direct requests from valid IPs succeed."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['10.0.1.2', '10.0.1.3']
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {'use_xff': False}
+        
+        # Request from 10.0.1.2 should succeed
+        client_address = ('10.0.1.2', 12345)
+        self.assertTrue(rule.validate('/test', {}, client_address, config))
+        
+        # Request from 10.0.1.3 should succeed
+        client_address = ('10.0.1.3', 12345)
+        self.assertTrue(rule.validate('/test', {}, client_address, config))
+    
+    def test_scenario1_direct_requests_from_invalid_ips(self):
+        """Test that direct requests from invalid IPs fail."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['10.0.1.2', '10.0.1.3']
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {'use_xff': False}
+        
+        # Request from 10.0.1.4 should fail
+        client_address = ('10.0.1.4', 12345)
+        self.assertFalse(rule.validate('/test', {}, client_address, config))
+    
+    def test_scenario1_xff_header_is_ignored(self):
+        """Test that X-Forwarded-For header is ignored when use_xff is False."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['10.0.1.2', '10.0.1.3']
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {'use_xff': False}
+        
+        # Request from invalid IP with X-Forwarded-For header should fail
+        headers = {'X-Forwarded-For': '10.0.1.2'}
+        client_address = ('192.168.1.100', 12345)
+        self.assertFalse(rule.validate('/test', headers, client_address, config))
+
+
+class TestScenario3XFFEnabled(unittest.TestCase):
+    """Test Scenario 3: X_FORWARDED_FOR is set to True with XFF_UPSTREAM_IP set."""
+    
+    def test_scenario3_upstream_without_xff_header_fails(self):
+        """Test that requests from upstream without X-Forwarded-For header fail."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['10.0.1.9', '10.0.1.10']
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {
+            'use_xff': True,
+            'xff_upstream_ip': '10.0.1.2'
+        }
+        
+        # Request from upstream without X-Forwarded-For should fail
+        client_address = ('10.0.1.2', 12345)
+        self.assertFalse(rule.validate('/test', {}, client_address, config))
+    
+    def test_scenario3_upstream_with_invalid_xff_fails(self):
+        """Test that requests from upstream with invalid X-Forwarded-For fail."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['10.0.1.9', '10.0.1.10']
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {
+            'use_xff': True,
+            'xff_upstream_ip': '10.0.1.2'
+        }
+        
+        # Request from upstream with invalid X-Forwarded-For should fail
+        headers = {'X-Forwarded-For': '10.0.1.5'}
+        client_address = ('10.0.1.2', 12345)
+        self.assertFalse(rule.validate('/test', headers, client_address, config))
+    
+    def test_scenario3_upstream_with_valid_xff_succeeds(self):
+        """Test that requests from upstream with valid X-Forwarded-For succeed."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['10.0.1.9', '10.0.1.10']
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {
+            'use_xff': True,
+            'xff_upstream_ip': '10.0.1.2'
+        }
+        
+        # Request from upstream with valid X-Forwarded-For should succeed
+        headers = {'X-Forwarded-For': '10.0.1.9'}
+        client_address = ('10.0.1.2', 12345)
+        self.assertTrue(rule.validate('/test', headers, client_address, config))
+        
+        # Request from upstream with another valid X-Forwarded-For should succeed
+        headers = {'X-Forwarded-For': '10.0.1.10'}
+        self.assertTrue(rule.validate('/test', headers, client_address, config))
+    
+    def test_scenario3_direct_from_valid_ips_succeeds(self):
+        """Test that direct requests from valid IPs succeed regardless of X-Forwarded-For."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['10.0.1.9', '10.0.1.10']
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {
+            'use_xff': True,
+            'xff_upstream_ip': '10.0.1.2'
+        }
+        
+        # Direct request from 10.0.1.9 should succeed
+        client_address = ('10.0.1.9', 12345)
+        self.assertTrue(rule.validate('/test', {}, client_address, config))
+        
+        # Direct request from 10.0.1.10 should succeed
+        client_address = ('10.0.1.10', 12345)
+        self.assertTrue(rule.validate('/test', {}, client_address, config))
+        
+        # Direct request with X-Forwarded-For header should also succeed
+        headers = {'X-Forwarded-For': '192.168.1.1'}
+        self.assertTrue(rule.validate('/test', headers, client_address, config))
+    
+    def test_scenario3_xff_upstream_with_cidr_notation(self):
+        """Test that xff_upstream_ip supports CIDR notation."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['10.0.1.9']
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {
+            'use_xff': True,
+            'xff_upstream_ip': '10.0.1.0/24'  # CIDR notation
+        }
+        
+        # Request from IP in upstream CIDR with valid X-Forwarded-For should succeed
+        headers = {'X-Forwarded-For': '10.0.1.9'}
+        client_address = ('10.0.1.2', 12345)
+        self.assertTrue(rule.validate('/test', headers, client_address, config))
+        
+        # Request from IP outside upstream CIDR should use direct connection IP
+        client_address = ('10.0.2.1', 12345)
+        self.assertFalse(rule.validate('/test', headers, client_address, config))
+    
+    def test_scenario3_multiple_ips_in_xff_header(self):
+        """Test that X-Forwarded-For with multiple IPs uses the first one."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['10.0.1.9']
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        config = {
+            'use_xff': True,
+            'xff_upstream_ip': '10.0.1.2'
+        }
+        
+        # X-Forwarded-For with multiple IPs should use the first one
+        headers = {'X-Forwarded-For': '10.0.1.9, 192.168.1.1, 172.16.0.1'}
+        client_address = ('10.0.1.2', 12345)
+        self.assertTrue(rule.validate('/test', headers, client_address, config))
+
+
 if __name__ == '__main__':
     unittest.main()
+
