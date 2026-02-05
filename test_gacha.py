@@ -112,7 +112,7 @@ class TestRuleLoading(unittest.TestCase):
         rules = load_rules(self.rules_dir)
         self.assertEqual(len(rules), 1)
         self.assertEqual(rules[0].path, 'files/test.txt')
-        self.assertEqual(rules[0].request_uri, '/test')
+        self.assertEqual(rules[0].request_uri, ['/test'])
 
     def test_load_rule_missing_path(self):
         """Test that rule without path is skipped."""
@@ -144,6 +144,93 @@ class TestRuleLoading(unittest.TestCase):
 
     def test_load_empty_rules_dir(self):
         """Test loading from empty rules directory."""
+        rules = load_rules(self.rules_dir)
+        self.assertEqual(len(rules), 0)
+    
+    def test_load_rule_with_multiple_request_uris(self):
+        """Test loading a rule with multiple request_uri values."""
+        rule_path = os.path.join(self.rules_dir, 'multi_uri.yaml')
+        rule_data = {
+            'rule': {
+                'path': 'files/test.txt',
+                'request_uri': ['/test', '/test2', '/test3']
+            }
+        }
+        with open(rule_path, 'w') as f:
+            yaml.dump(rule_data, f)
+
+        rules = load_rules(self.rules_dir)
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0].path, 'files/test.txt')
+        self.assertEqual(rules[0].request_uri, ['/test', '/test2', '/test3'])
+    
+    def test_duplicate_request_uri_in_different_files(self):
+        """Test that duplicate request_uri values across files cause fatal error."""
+        # Create two rules with the same request_uri
+        rule_path1 = os.path.join(self.rules_dir, 'rule1.yaml')
+        rule_data1 = {
+            'rule': {
+                'path': 'files/file1.txt',
+                'request_uri': '/duplicate'
+            }
+        }
+        with open(rule_path1, 'w') as f:
+            yaml.dump(rule_data1, f)
+        
+        rule_path2 = os.path.join(self.rules_dir, 'rule2.yaml')
+        rule_data2 = {
+            'rule': {
+                'path': 'files/file2.txt',
+                'request_uri': '/duplicate'
+            }
+        }
+        with open(rule_path2, 'w') as f:
+            yaml.dump(rule_data2, f)
+
+        # Loading rules should raise ValueError
+        with self.assertRaises(ValueError):
+            load_rules(self.rules_dir)
+    
+    def test_duplicate_request_uri_in_array(self):
+        """Test that duplicate request_uri in array across files causes fatal error."""
+        # Create first rule with multiple URIs
+        rule_path1 = os.path.join(self.rules_dir, 'rule1.yaml')
+        rule_data1 = {
+            'rule': {
+                'path': 'files/file1.txt',
+                'request_uri': ['/uri1', '/uri2', '/uri3']
+            }
+        }
+        with open(rule_path1, 'w') as f:
+            yaml.dump(rule_data1, f)
+        
+        # Create second rule with overlapping URI
+        rule_path2 = os.path.join(self.rules_dir, 'rule2.yaml')
+        rule_data2 = {
+            'rule': {
+                'path': 'files/file2.txt',
+                'request_uri': '/uri2'
+            }
+        }
+        with open(rule_path2, 'w') as f:
+            yaml.dump(rule_data2, f)
+
+        # Loading rules should raise ValueError
+        with self.assertRaises(ValueError):
+            load_rules(self.rules_dir)
+    
+    def test_load_rule_with_empty_request_uri(self):
+        """Test that rule with empty request_uri is skipped."""
+        rule_path = os.path.join(self.rules_dir, 'empty.yaml')
+        rule_data = {
+            'rule': {
+                'path': 'files/test.txt',
+                'request_uri': []
+            }
+        }
+        with open(rule_path, 'w') as f:
+            yaml.dump(rule_data, f)
+
         rules = load_rules(self.rules_dir)
         self.assertEqual(len(rules), 0)
 
@@ -295,6 +382,44 @@ class TestRuleValidation(unittest.TestCase):
         }
         rule = RuleValidator(rule_data, 'test_rule')
         self.assertFalse(rule.serve_once)
+    
+    def test_multiple_request_uris(self):
+        """Test rule with multiple request URIs (OR logic)."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': ['/test', '/other', '/third']
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        
+        # Should match any of the URIs
+        self.assertTrue(rule.validate('/test', {}))
+        self.assertTrue(rule.validate('/other', {}))
+        self.assertTrue(rule.validate('/third', {}))
+        
+        # Should not match different URI
+        self.assertFalse(rule.validate('/nomatch', {}))
+    
+    def test_multiple_request_uris_with_other_conditions(self):
+        """Test multiple request URIs work with other conditions."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': ['/api/v1', '/api/v2'],
+            'header': 'X-API-Key',
+            'header_value': 'secret123'
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        
+        # Should match first URI with correct header
+        headers = {'X-API-Key': 'secret123'}
+        self.assertTrue(rule.validate('/api/v1', headers))
+        
+        # Should match second URI with correct header
+        self.assertTrue(rule.validate('/api/v2', headers))
+        
+        # Should not match with wrong header
+        headers = {'X-API-Key': 'wrong'}
+        self.assertFalse(rule.validate('/api/v1', headers))
+        self.assertFalse(rule.validate('/api/v2', headers))
 
 
 class TestIntegration(unittest.TestCase):
@@ -442,7 +567,7 @@ class TestRuleFileMonitor(unittest.TestCase):
         
         # Should have loaded 1 rule
         self.assertEqual(len(monitor.rules), 1)
-        self.assertEqual(monitor.rules[0].request_uri, '/file1')
+        self.assertEqual(monitor.rules[0].request_uri, ['/file1'])
         
         # Add another rule
         self.create_rule_file('rule2.yaml', {
