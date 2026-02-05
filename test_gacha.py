@@ -1127,7 +1127,6 @@ class TestXFFEdgeCases(unittest.TestCase):
         self.assertTrue(rule.validate('/test', headers, client_address, config))
         
         # Should also succeed without X-Forwarded-For
-        client_address = ('10.0.1.2', 12345)
         self.assertTrue(rule.validate('/test', {}, client_address, config))
 
 
