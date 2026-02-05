@@ -1,0 +1,42 @@
+# Example rule demonstrating X-Forwarded-For (XFF) configuration
+#
+# This rule file shows how to configure source IP restrictions when running
+# Gacha behind a reverse proxy, load balancer, or CDN.
+#
+# IMPORTANT: To use this rule, you must configure use_xff and xff_upstream_ip
+# in your config.yaml file. For example:
+#
+#   config:
+#     hostname: 0.0.0.0
+#     listen_port: 8080
+#     use_xff: true
+#     xff_upstream_ip: 10.0.1.2  # IP or CIDR of your load balancer/proxy
+#
+# How it works:
+# - When use_xff is enabled and a request comes from the xff_upstream_ip address,
+#   the X-Forwarded-For header is used to determine the client IP
+# - Direct requests (not from the upstream proxy) use their connection IP
+# - This allows IP-based access control to work correctly behind proxies
+#
+# Security Warning: Only enable use_xff when you trust your upstream proxy to
+# correctly set the X-Forwarded-For header. Misconfiguration can allow IP spoofing.
+
+rule:
+  # The file to serve
+  path: files/protected_xff_example.txt
+  
+  # The URI path to access this file
+  request_uri: /protected-xff
+  
+  # Allow access only from specific client IP ranges
+  # When use_xff is enabled:
+  #   - Requests from the proxy (xff_upstream_ip) with X-Forwarded-For header
+  #     in this range will be allowed
+  #   - Direct requests from IPs in this range (bypassing the proxy) will also
+  #     be allowed
+  # When use_xff is disabled:
+  #   - Only direct connection IPs in this range are allowed
+  source_ip:
+    - 203.0.113.0/24   # Example: External client network
+    - 198.51.100.0/24  # Example: Another allowed network
+    - 192.0.2.50/32    # Example: Specific allowed IP

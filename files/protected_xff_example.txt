@@ -1,0 +1,10 @@
+This is an example file for demonstrating X-Forwarded-For (XFF) configuration.
+
+This file is served when:
+1. The request URI is /protected-xff
+2. The client IP (from X-Forwarded-For if behind proxy) is in the allowed ranges:
+   - 203.0.113.0/24
+   - 198.51.100.0/24
+   - 192.0.2.50
+
+See rules/xff_example.yaml for the complete rule configuration.
