@@ -553,7 +553,7 @@ def load_rules(rules_dir: str) -> List[RuleValidator]:
     uri_to_rule_file: Dict[str, str] = {}
 
     if not os.path.isdir(rules_dir):
-        logger.critical(f"Warning: Rules directory not found: {rules_dir}")
+        logging.critical(f"Warning: Rules directory not found: {rules_dir}")
         return rules
 
     for filename in os.listdir(rules_dir):

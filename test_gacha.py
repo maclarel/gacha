@@ -16,7 +16,7 @@ import threading
 
 # Add parent directory to path to import gacha
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gacha import load_config, load_rules, RuleValidator, RuleFileMonitor
+from gacha import load_config, load_rules, RuleValidator, RuleFileMonitor, normalize_to_list, DEFAULT_POLL_INTERVAL
 
 
 class TestConfigLoading(unittest.TestCase):
@@ -1195,6 +1195,237 @@ class TestXFFDocumentationScenarios(unittest.TestCase):
         # Request from proxy with X-Forwarded-For from disallowed network should fail
         headers = {'X-Forwarded-For': '8.8.8.8'}
         self.assertFalse(rule.validate('/data', headers, client_address, config))
+
+
+class TestNormalizeToList(unittest.TestCase):
+    """Test the normalize_to_list utility function."""
+
+    def test_none_returns_none_when_not_allowing_empty(self):
+        self.assertIsNone(normalize_to_list(None, allow_empty=False))
+
+    def test_none_returns_empty_list_when_allowing_empty(self):
+        self.assertEqual(normalize_to_list(None, allow_empty=True), [])
+
+    def test_single_string_wrapped_in_list(self):
+        self.assertEqual(normalize_to_list('foo'), ['foo'])
+
+    def test_single_integer_wrapped_in_list(self):
+        self.assertEqual(normalize_to_list(42), [42])
+
+    def test_list_returned_unchanged(self):
+        value = ['a', 'b', 'c']
+        self.assertEqual(normalize_to_list(value), value)
+
+    def test_empty_list_returned_unchanged(self):
+        self.assertEqual(normalize_to_list([]), [])
+
+
+class TestConfigLoadingDefaults(unittest.TestCase):
+    """Test configuration defaults and error handling."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def _write_config(self, data):
+        config_path = os.path.join(self.test_dir, 'config.yaml')
+        with open(config_path, 'w') as f:
+            yaml.dump(data, f)
+        return config_path
+
+    def test_watch_rules_defaults_to_true(self):
+        config_path = self._write_config({'config': {'hostname': 'localhost', 'listen_port': 8080}})
+        config = load_config(config_path)
+        self.assertTrue(config['watch_rules'])
+
+    def test_watch_interval_defaults_to_poll_interval(self):
+        config_path = self._write_config({'config': {'hostname': 'localhost', 'listen_port': 8080}})
+        config = load_config(config_path)
+        self.assertEqual(config['watch_interval'], DEFAULT_POLL_INTERVAL)
+
+    def test_watch_rules_and_interval_can_be_overridden(self):
+        config_path = self._write_config({
+            'config': {'hostname': 'localhost', 'listen_port': 8080,
+                       'watch_rules': False, 'watch_interval': 10.0}
+        })
+        config = load_config(config_path)
+        self.assertFalse(config['watch_rules'])
+        self.assertEqual(config['watch_interval'], 10.0)
+
+    def test_yaml_parse_error_raises_value_error(self):
+        config_path = os.path.join(self.test_dir, 'bad.yaml')
+        with open(config_path, 'w') as f:
+            f.write("config: {unclosed bracket\n")
+        with self.assertRaises(ValueError):
+            load_config(config_path)
+
+
+class TestRuleLoadingEdgeCases(unittest.TestCase):
+    """Additional edge cases for rule loading."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.rules_dir = os.path.join(self.test_dir, 'rules')
+        os.makedirs(self.rules_dir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def _write_rule(self, filename, rule_data):
+        path = os.path.join(self.rules_dir, filename)
+        with open(path, 'w') as f:
+            yaml.dump({'rule': rule_data}, f)
+
+    def test_nonexistent_directory_returns_empty_list(self):
+        rules = load_rules('/nonexistent/directory/that/does/not/exist')
+        self.assertEqual(rules, [])
+
+    def test_malformed_yaml_file_is_skipped(self):
+        self._write_rule('valid.yaml', {'path': 'files/a.txt', 'request_uri': '/a'})
+        bad_path = os.path.join(self.rules_dir, 'bad.yaml')
+        with open(bad_path, 'w') as f:
+            f.write("rule: {unclosed bracket\n")
+        rules = load_rules(self.rules_dir)
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0].request_uri, ['/a'])
+
+
+class TestRuleValidationEdgeCases(unittest.TestCase):
+    """Additional edge cases for rule validation logic."""
+
+    def test_header_present_without_value_restriction(self):
+        """A header with no header_value just requires the header to be present."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'header': 'Authorization',
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+
+        self.assertTrue(rule.validate('/test', {'Authorization': 'Bearer token123'}))
+        self.assertTrue(rule.validate('/test', {'Authorization': 'any-value'}))
+        self.assertFalse(rule.validate('/test', {}))
+
+    def test_eol_z_suffix_future(self):
+        """EOL with ISO 8601 Z suffix that is in the future should allow access."""
+        rule_data = {'path': 'files/test.txt', 'request_uri': '/test', 'eol': '2099-01-01T00:00:00Z'}
+        rule = RuleValidator(rule_data, 'test_rule')
+        self.assertTrue(rule.validate('/test', {}))
+
+    def test_eol_z_suffix_past(self):
+        """EOL with ISO 8601 Z suffix that is in the past should deny access."""
+        rule_data = {'path': 'files/test.txt', 'request_uri': '/test', 'eol': '2000-01-01T00:00:00Z'}
+        rule = RuleValidator(rule_data, 'test_rule')
+        self.assertFalse(rule.validate('/test', {}))
+
+    def test_eol_invalid_format_returns_false(self):
+        """An unparseable EOL string should deny access (fail safe)."""
+        rule_data = {'path': 'files/test.txt', 'request_uri': '/test', 'eol': 'not-a-date'}
+        rule = RuleValidator(rule_data, 'test_rule')
+        self.assertFalse(rule.validate('/test', {}))
+
+    def test_eol_as_timezone_aware_datetime_future(self):
+        """EOL as a tz-aware datetime object in the future should allow access."""
+        future = datetime.now(timezone.utc) + timedelta(days=30)
+        rule_data = {'path': 'files/test.txt', 'request_uri': '/test', 'eol': future}
+        rule = RuleValidator(rule_data, 'test_rule')
+        self.assertTrue(rule.validate('/test', {}))
+
+    def test_eol_as_timezone_aware_datetime_past(self):
+        """EOL as a tz-aware datetime object in the past should deny access."""
+        past = datetime.now(timezone.utc) - timedelta(days=30)
+        rule_data = {'path': 'files/test.txt', 'request_uri': '/test', 'eol': past}
+        rule = RuleValidator(rule_data, 'test_rule')
+        self.assertFalse(rule.validate('/test', {}))
+
+    def test_eol_as_timezone_naive_datetime_returns_false(self):
+        """A tz-naive datetime cannot be compared to UTC now; access should be denied."""
+        rule_data = {'path': 'files/test.txt', 'request_uri': '/test',
+                     'eol': datetime(2099, 1, 1)}  # far future but tz-naive
+        rule = RuleValidator(rule_data, 'test_rule')
+        self.assertFalse(rule.validate('/test', {}))
+
+    def test_source_ip_no_client_address_returns_false(self):
+        """A source_ip rule with no client_address should deny access."""
+        rule_data = {'path': 'files/test.txt', 'request_uri': '/test', 'source_ip': '10.0.0.0/8'}
+        rule = RuleValidator(rule_data, 'test_rule')
+        self.assertFalse(rule.validate('/test', {}, client_address=None))
+
+    def test_source_ip_multiple_cidrs_or_logic(self):
+        """Multiple source_ip entries are evaluated with OR logic."""
+        rule_data = {
+            'path': 'files/test.txt',
+            'request_uri': '/test',
+            'source_ip': ['10.0.0.0/8', '192.168.1.0/24'],
+        }
+        rule = RuleValidator(rule_data, 'test_rule')
+        self.assertTrue(rule.validate('/test', {}, ('10.5.5.5', 1234)))
+        self.assertTrue(rule.validate('/test', {}, ('192.168.1.50', 1234)))
+        self.assertFalse(rule.validate('/test', {}, ('172.16.0.1', 1234)))
+
+
+class TestRuleFileMonitorEdgeCases(unittest.TestCase):
+    """Additional edge cases for RuleFileMonitor."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.rules_dir = os.path.join(self.test_dir, 'rules')
+        os.makedirs(self.rules_dir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def _write_rule(self, filename, rule_data):
+        path = os.path.join(self.rules_dir, filename)
+        with open(path, 'w') as f:
+            yaml.dump({'rule': rule_data}, f)
+        return path
+
+    def test_nonexistent_rules_dir_returns_no_files(self):
+        monitor = RuleFileMonitor('/nonexistent/directory')
+        self.assertEqual(monitor.get_rule_files(), {})
+        self.assertFalse(monitor.has_changes())
+
+    def test_get_changed_rule_files_reports_new_file(self):
+        monitor = RuleFileMonitor(self.rules_dir)
+        monitor.file_mtimes = monitor.get_rule_files()
+
+        self.assertEqual(monitor.get_changed_rule_files(), set())
+
+        self._write_rule('new.yaml', {'path': 'f/new.txt', 'request_uri': '/new'})
+        changed = monitor.get_changed_rule_files()
+        self.assertIn('new.yaml', changed)
+
+    def test_get_changed_rule_files_reports_deleted_file(self):
+        rule_path = self._write_rule('test.yaml', {'path': 'f/t.txt', 'request_uri': '/t'})
+
+        monitor = RuleFileMonitor(self.rules_dir)
+        monitor.file_mtimes = monitor.get_rule_files()
+
+        os.remove(rule_path)
+        changed = monitor.get_changed_rule_files()
+        self.assertIn('test.yaml', changed)
+
+    def test_reload_rules_keeps_existing_on_duplicate_uri_error(self):
+        """When reload fails due to duplicate URIs, existing rules are preserved."""
+        self._write_rule('rule1.yaml', {'path': 'f/a.txt', 'request_uri': '/a'})
+
+        monitor = RuleFileMonitor(self.rules_dir)
+        monitor.reload_rules()
+        self.assertEqual(len(monitor.get_rules()), 1)
+
+        # Introduce a duplicate URI — reload must keep the original rule
+        self._write_rule('rule2.yaml', {'path': 'f/b.txt', 'request_uri': '/a'})
+        monitor.reload_rules()
+
+        rules = monitor.get_rules()
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0].request_uri, ['/a'])
 
 
 if __name__ == '__main__':
